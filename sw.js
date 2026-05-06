@@ -1,5 +1,5 @@
 // 💡 アップデート時はここを v2, v3... と書き換えることで更新が発火します
-const CACHE_NAME = "grindmoney-v10";
+const CACHE_NAME = "grindmoney-v17";
 const urlsToCache = [
   "/",
   "/index.html",
@@ -12,7 +12,6 @@ const urlsToCache = [
 const externalUrlsToCache = [
   "https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.8.0/sql-wasm.js",
   "https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.8.0/sql-wasm.wasm",
-  "https://cdn.jsdelivr.net/npm/@formkit/auto-animate@1.2.2/index.global.js",
 ];
 
 // インストール時にキャッシュを作成

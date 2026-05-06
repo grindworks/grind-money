@@ -22,7 +22,7 @@
 
 ## 3. Frontend (S-Rank UI & Hacker Aesthetic)
 
-- **Tailwind CSS:** Use Tailwind utility classes for all styling. Support both Light and Dark (`dark:`) modes explicitly. Avoid custom CSS in `<style>` blocks unless absolutely necessary.
+- **Tailwind CSS:** Use Tailwind utility classes for all styling. Avoid custom CSS in `<style>` blocks unless absolutely necessary.
 - **Icons (Inline SVG Sprites):** Load icons strictly via inline SVG `<use href="#icon-name"></use>`. **NEVER** use external files like `sprite.svg` or icon fonts, as they break when the PWA is offline.
 - **Micro-Interactions & UX:**
   - Enhance the "Grind (fast input)" experience. Ensure form submissions do not cause page reloads (`event.preventDefault()`).

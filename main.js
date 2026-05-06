@@ -18,13 +18,17 @@ let customAccountDict = []; // カスタム科目辞書の配列
 // --- 設定保存用ユーティリティ (SQLiteベース) ---
 function getDbSetting(key, defaultValue = null) {
   if (!db) return defaultValue;
+  let stmt;
   try {
-    const res = db.exec("SELECT value FROM settings WHERE key = ?", [key]);
-    if (res.length > 0 && res[0].values.length > 0) {
-      return res[0].values[0][0];
+    stmt = db.prepare("SELECT value FROM settings WHERE key = ?");
+    stmt.bind([key]);
+    if (stmt.step()) {
+      return stmt.get()[0];
     }
   } catch (e) {
     console.error("Setting read error:", e);
+  } finally {
+    if (stmt) stmt.free();
   }
   return defaultValue;
 }
@@ -129,24 +133,25 @@ function setDirty(state) {
     filenameBadge.classList.remove("hidden");
   }
 
-  // 自動バックアップの実行 (10秒スロットル: タイピング中のフリーズ防止と確実な保存を両立)
+  // 自動バックアップの実行 (10秒デバウンス: 入力が落ち着いたタイミングで実行し、db.export() によるタイピング中のフリーズを防止)
   if (state && db) {
-    if (!draftTimer) {
-      draftTimer = setTimeout(async () => {
-        try {
-          let data = db.export();
-          const password = document.getElementById("file-password").value;
-          if (password) {
-            data = await encryptData(data, password);
-          }
-          await saveDraft(data);
-        } catch (e) {
-          console.error("Draft save failed", e);
-        } finally {
-          draftTimer = null; // 保存完了後にタイマーを解放
-        }
-      }, 2000);
+    if (draftTimer) {
+      clearTimeout(draftTimer);
     }
+    draftTimer = setTimeout(async () => {
+      try {
+        let data = db.export();
+        const password = document.getElementById("file-password").value;
+        if (password) {
+          data = await encryptData(data, password);
+        }
+        await saveDraft(data);
+      } catch (e) {
+        console.error("Draft save failed", e);
+      } finally {
+        draftTimer = null; // 保存完了後にタイマーを解放
+      }
+    }, 10000);
   } else if (!state) {
     if (draftTimer) {
       clearTimeout(draftTimer);
@@ -326,6 +331,38 @@ function migrateDatabase() {
         value TEXT
       );
     `);
+
+    // 🎯 God-Rank: 既存のlocalStorageからSQLiteへのシームレスな移行
+    try {
+      const keysToMigrate = ["customAccountDict", "fiscalMonth", "accountDict"];
+      let checkStmt, insertStmt;
+      try {
+        checkStmt = db.prepare("SELECT 1 FROM settings WHERE key = ?");
+        insertStmt = db.prepare(
+          "INSERT INTO settings (key, value) VALUES (?, ?)",
+        );
+
+        for (const key of keysToMigrate) {
+          const oldVal = localStorage.getItem(key);
+          if (oldVal !== null && oldVal !== undefined) {
+            checkStmt.bind([key]);
+            const exists = checkStmt.step();
+            checkStmt.reset();
+
+            if (!exists) {
+              insertStmt.run([key, oldVal]);
+              localStorage.removeItem(key); // 吸い上げ完了後、古いデータを消去
+              setDirty(true);
+            }
+          }
+        }
+      } finally {
+        if (checkStmt) checkStmt.free();
+        if (insertStmt) insertStmt.free();
+      }
+    } catch (e) {
+      console.warn("マイグレーションの実行をスキップしました", e);
+    }
   } catch (e) {
     console.error("Migration error:", e);
   }
@@ -451,13 +488,6 @@ async function initSQLite() {
 
     document.getElementById("app-ui").classList.remove("hidden");
 
-    // AutoAnimateの適用 (マイクロインタラクション)
-    const container = document.getElementById("blocks-container");
-    if (window.autoAnimate && container) {
-      window.autoAnimate(container);
-      container._autoAnimate = true;
-    }
-
     // 【パフォーマンス対策】データ数が多い場合は、起動時のフリーズを防ぐためデフォルトで「今年度」のみを表示
     const countRes = db.exec("SELECT COUNT(*) FROM records");
     const recordCount = countRes.length > 0 ? countRes[0].values[0][0] : 0;
@@ -540,10 +570,11 @@ function showToast(message, iconHtml = "✅", type = "normal") {
 // 2. ブロックまたはアイテムの追加
 function addBlock() {
   const memoInput = document.getElementById("new-block-memo");
-  if (!memoInput.value) return;
+  const trimmedMemo = memoInput.value.trim();
+  if (!trimmedMemo) return;
 
   db.run("INSERT INTO records (memo, amount) VALUES (?, ?)", [
-    memoInput.value,
+    trimmedMemo,
     null,
   ]);
   const res = db.exec("SELECT last_insert_rowid()");
@@ -593,14 +624,22 @@ function evaluateMath(expr) {
           numStr += c;
         } else {
           if (numStr) {
-            tokens.push(numStr);
+            // 単項マイナスの直後が括弧だった場合の救済措置
+            if (numStr === "-") {
+              tokens.push("-1", "*");
+            } else {
+              tokens.push(numStr);
+            }
             numStr = "";
           }
           tokens.push(c);
         }
       }
     }
-    if (numStr) tokens.push(numStr);
+    if (numStr) {
+      if (numStr === "-") tokens.push("-1", "*");
+      else tokens.push(numStr);
+    }
 
     const precedence = { "+": 1, "-": 1, "*": 2, "/": 2 };
     const outputQueue = [];
@@ -695,7 +734,6 @@ function addItem(parentId, memo, amount, dateStr, accountStr) {
     if (document.getElementById("period-filter")) {
       document.getElementById("period-filter").value = "all";
     }
-    renderData(parentId);
 
     // ステータスバーで通知
     showToast(
@@ -703,6 +741,8 @@ function addItem(parentId, memo, amount, dateStr, accountStr) {
       '<span class="text-blue-400">👀</span>',
     );
   }
+
+  renderData(parentId);
 }
 
 function insertRecord(
@@ -738,7 +778,6 @@ function insertRecord(
     if (stmt) stmt.free();
   }
   setDirty(true);
-  renderData(parentId);
 }
 
 // 【新機能 1】 過去のメモ履歴を抽出して Datalist に登録する
@@ -793,13 +832,13 @@ function autoSuggestAccount(memoInput) {
 
         // （おまけ）自動入力されたことがユーザーに伝わるよう、一瞬だけ色を変えるマイクロインタラクション
         accountInput.classList.add(
-          "bg-purple-100",
-          "text-purple-700",
+          "!bg-purple-100",
+          "!text-purple-700",
           "transition-colors",
         );
         setTimeout(
           () =>
-            accountInput.classList.remove("bg-purple-100", "text-purple-700"),
+            accountInput.classList.remove("!bg-purple-100", "!text-purple-700"),
           1000,
         );
       }
@@ -898,6 +937,7 @@ function updateRecord(id, field, newValue, element) {
 
   if (activeEl) {
     if (
+      typeof activeEl.hasAttribute === "function" &&
       activeEl.hasAttribute("data-field") &&
       activeEl.hasAttribute("data-id")
     ) {
@@ -925,8 +965,25 @@ function updateRecord(id, field, newValue, element) {
     // 再描画で失われたフォーカスを即座に復元
     if (focusSelector) {
       requestAnimationFrame(() => {
-        const target = document.querySelector(focusSelector);
-        if (target) target.focus();
+        try {
+          const target = document.querySelector(focusSelector);
+          if (target) {
+            target.focus();
+            if (target.hasAttribute("contenteditable")) {
+              const range = document.createRange();
+              const sel = window.getSelection();
+              range.selectNodeContents(target);
+              range.collapse(false);
+              sel.removeAllRanges();
+              sel.addRange(range);
+            }
+          }
+        } catch (e) {
+          console.warn(
+            "フォーカスの復元をスキップしました(不正なセレクタ等)",
+            e,
+          );
+        }
       });
     }
   } else {
@@ -1024,6 +1081,25 @@ function toggleBlock(id) {
   }
 }
 
+// --- すべて展開 / すべて折りたたみ ---
+function toggleAllBlocks(collapse) {
+  if (!db) return;
+
+  if (collapse) {
+    // 現在画面に表示されているブロックすべてのIDをセットに追加
+    document.querySelectorAll(".group\\/block").forEach((el) => {
+      const id = parseInt(el.id.replace("block-", ""), 10);
+      if (!isNaN(id)) collapsedBlocks.add(id);
+    });
+  } else {
+    // セットを空にして全展開
+    collapsedBlocks.clear();
+  }
+
+  // 画面を一括で再描画（ループで個別にアニメーションさせると重いため、即時反映させる）
+  renderData();
+}
+
 // --- 期間フィルターの選択肢を自動生成する ---
 function updatePeriodDropdown() {
   if (!db) return;
@@ -1088,22 +1164,30 @@ function handleDropdownChange() {
 }
 
 // クイックセレクターのアクティブ状態を更新
-function setActiveQuickPeriodButton(btn) {
+function setActiveQuickPeriodButton(btn, keepYear = false) {
   const container = document.getElementById("quick-period-selectors");
   if (!container) return;
   const btns = container.querySelectorAll("button");
   btns.forEach((b) => {
+    // 🎯 keepYearがtrueの場合、年度系のボタン(今年/今年度/前年度)の点灯は消さずに保持する
+    if (keepYear) {
+      const onclickAttr = b.getAttribute("onclick") || "";
+      const isYearGroup = onclickAttr.includes("YearFilter");
+      if (isYearGroup) return; // 年度系ボタンはリセットをスキップ
+    }
+
     b.classList.remove("ring-2", "ring-primary", "ring-offset-1"); // 古い仕様の枠線をクリア
     b.classList.remove("!bg-primary", "!text-white", "!border-primary"); // 色反転をクリア
+
     const activeClasses = b.getAttribute("data-active-classes");
     if (activeClasses) {
-      b.classList.remove(...activeClasses.split(" "));
+      b.classList.remove(...activeClasses.split(" ").filter(Boolean));
     }
   });
   if (btn) {
     const activeClasses = btn.getAttribute("data-active-classes");
     if (activeClasses) {
-      btn.classList.add(...activeClasses.split(" "));
+      btn.classList.add(...activeClasses.split(" ").filter(Boolean));
     }
   }
 }
@@ -1126,24 +1210,61 @@ function setPeriodFilter(val, btn = null) {
 
 // 複数月（[4,5,6] など）のセット
 function setMultiMonthFilter(monthArray, btn = null) {
-  // 基準となる年を決定（現在選択されている年、または今年）
   let baseYear = new Date().getFullYear();
   const select = document.getElementById("period-filter");
   const currentFilter = select ? select.value : "all";
-  if (window.currentActiveMonths && window.currentActiveMonths.length > 0) {
-    baseYear = parseInt(window.currentActiveMonths[0].split("-")[0], 10);
-  } else if (currentFilter !== "all" && currentFilter.includes("-")) {
-    baseYear = parseInt(currentFilter.split("-")[0]);
-  } else if (currentFilter !== "all" && currentFilter.length === 4) {
-    baseYear = parseInt(currentFilter);
+
+  // 🎯 今年度・前年度がアクティブかどうかを判定する
+  const isFiscalYearActive = document
+    .getElementById("fiscal-year-btn")
+    ?.classList.contains("!bg-purple-600");
+  const isPrevFiscalYearActive = document
+    .getElementById("prev-fiscal-year-btn")
+    ?.classList.contains("!bg-purple-600");
+  const startMonth = parseInt(getDbSetting("fiscalMonth", "4"), 10);
+  let targetMonths = [];
+
+  if (isFiscalYearActive || isPrevFiscalYearActive) {
+    // === 年度ベースの複合フィルター ===
+    const today = new Date();
+    let startYear = today.getFullYear();
+    if (today.getMonth() + 1 < startMonth) {
+      startYear--;
+    }
+    if (isPrevFiscalYearActive) {
+      startYear--; // 前年度ならさらに1年戻す
+    }
+
+    targetMonths = monthArray.map((m) => {
+      let y = startYear;
+      // 決算期を跨ぐ月（例：4月開始における1〜3月）は、西暦を翌年に進める
+      if (m < startMonth) {
+        y++;
+      }
+      return `${y}-${String(m).padStart(2, "0")}`;
+    });
+  } else {
+    // === 暦年ベース（今年、または特定年）のフィルター ===
+    if (window.currentActiveMonths && window.currentActiveMonths.length > 0) {
+      baseYear = parseInt(window.currentActiveMonths[0].split("-")[0], 10);
+    } else if (currentFilter !== "all" && currentFilter.includes("-")) {
+      baseYear = parseInt(currentFilter.split("-")[0], 10);
+    } else if (currentFilter !== "all" && currentFilter.length === 4) {
+      baseYear = parseInt(currentFilter, 10);
+    }
+
+    targetMonths = monthArray.map(
+      (m) => `${baseYear}-${String(m).padStart(2, "0")}`,
+    );
   }
 
-  window.currentActiveMonths = monthArray.map(
-    (m) => `${baseYear}-${String(m).padStart(2, "0")}`,
-  );
+  window.currentActiveMonths = targetMonths;
   if (select) select.value = "all";
   currentDisplayedTotal = 0;
-  setActiveQuickPeriodButton(btn);
+
+  // 🎯 第2引数を true にすることで「年度の紫・緑色」を消さずに「月ボタンの青色」を両立させる
+  setActiveQuickPeriodButton(btn, true);
+
   if (document.startViewTransition) {
     document.startViewTransition(() => renderData());
   } else {
@@ -1191,8 +1312,16 @@ function changeFiscalMonth() {
       const isFiscalYearActive = document
         .getElementById("fiscal-year-btn")
         ?.classList.contains("!bg-purple-600");
+      const isPrevFiscalYearActive = document
+        .getElementById("prev-fiscal-year-btn")
+        ?.classList.contains("!bg-purple-600");
+
       if (isFiscalYearActive) {
-        setFiscalYearFilter();
+        setFiscalYearFilter(document.getElementById("fiscal-year-btn"));
+      } else if (isPrevFiscalYearActive) {
+        setPreviousFiscalYearFilter(
+          document.getElementById("prev-fiscal-year-btn"),
+        );
       } else {
         // その他のフィルター時でも、ドロップダウンや画面の再描画だけは行っておく
         if (document.startViewTransition) {
@@ -1233,7 +1362,9 @@ function setPreviousFiscalYearFilter(btn = null) {
   const select = document.getElementById("period-filter");
   if (select) select.value = "all";
   currentDisplayedTotal = 0;
-  setActiveQuickPeriodButton(btn);
+  setActiveQuickPeriodButton(
+    btn || document.getElementById("prev-fiscal-year-btn"),
+  );
   if (document.startViewTransition) {
     document.startViewTransition(() => renderData());
   } else {
@@ -1347,13 +1478,6 @@ function renderData(focusBlockId = null) {
   // 親ブロックを「新しいものが一番上」になるようID降順でソート
   filteredTree.sort((a, b) => b.id - a.id);
 
-  // AutoAnimateフリーズ防止のためのアイテム総数カウント
-  let totalItemsCount = 0;
-  filteredTree.forEach((block) => {
-    totalItemsCount += block.children.length;
-  });
-  const disableAnimation = totalItemsCount > 500;
-
   // 合計金額ラベルの表記更新
   const filterEl = document.getElementById("period-filter");
   const totalLabelEl = document.getElementById("grand-total-label");
@@ -1423,7 +1547,15 @@ function renderData(focusBlockId = null) {
     }
   });
 
+  const blockControls = document.getElementById("block-controls");
+
   if (filteredTree.length === 0) {
+    // データがない時はコントロールを隠す
+    if (blockControls) {
+      blockControls.classList.add("hidden");
+      blockControls.classList.remove("flex");
+    }
+
     const isFilterActive = periodFilter !== "all" || window.currentActiveMonths;
     container.innerHTML = `
       <div id="empty-state" class="flex flex-col items-center justify-center py-20 text-slate-400">
@@ -1442,9 +1574,15 @@ function renderData(focusBlockId = null) {
     return;
   }
 
+  // データがある時はコントロールを表示
+  if (blockControls) {
+    blockControls.classList.remove("hidden");
+    blockControls.classList.add("flex");
+  }
+
   let currentDomIndex = 0;
   let grandTotal = 0;
-  let tagTotals = {}; // タグ集計用
+  let tagTotals = Object.create(null); // タグ集計用 (プロトタイプ汚染防止)
 
   filteredTree.forEach((block) => {
     block.children.forEach((item) => {
@@ -1503,7 +1641,7 @@ function renderData(focusBlockId = null) {
           "group block px-2 py-1.5 hover:bg-slate-100 rounded transition-colors cursor-pointer flex justify-between items-center";
         a.innerHTML = `
           <span class="text-sm font-medium text-slate-600 group-hover:text-primary transition-colors truncate">${escapeHtml(tag)}</span>
-          <span class="text-[10px] font-mono font-bold text-slate-400 bg-slate-100 px-1.5 py-0.5 rounded group-hover:bg-white transition-colors">¥${data.amount.toLocaleString("ja-JP")}</span>
+          <span class="text-[10px] tabular-nums tracking-tight font-bold text-slate-400 bg-slate-100 px-1.5 py-0.5 rounded group-hover:bg-white transition-colors">¥${data.amount.toLocaleString("ja-JP")}</span>
         `;
         a.onclick = (e) => {
           e.preventDefault();
@@ -1534,7 +1672,7 @@ function renderData(focusBlockId = null) {
         const btn = document.createElement("button");
         btn.className =
           "text-left p-3 rounded-lg bg-slate-50 hover:bg-slate-100 border border-slate-100 transition-colors cursor-pointer flex flex-col gap-1";
-        btn.innerHTML = `<span class="text-sm font-bold text-slate-700 truncate">${escapeHtml(tag)}</span><span class="text-xs font-mono text-slate-500">¥${data.amount.toLocaleString("ja-JP")}</span>`;
+        btn.innerHTML = `<span class="text-sm font-bold text-slate-700 truncate">${escapeHtml(tag)}</span><span class="text-xs tabular-nums tracking-tight text-slate-500">¥${data.amount.toLocaleString("ja-JP")}</span>`;
         btn.onclick = () => showTagModal(tag, data);
         grid.appendChild(btn);
       });
@@ -1578,7 +1716,13 @@ function renderData(focusBlockId = null) {
               "bg-primary-50",
               "font-bold",
             );
-            activeToc.scrollIntoView({ behavior: "smooth", block: "nearest" });
+            const tocContainer = document.getElementById("toc-container");
+            if (tocContainer && !tocContainer.matches(":hover")) {
+              activeToc.scrollIntoView({
+                behavior: "smooth",
+                block: "nearest",
+              });
+            }
           }
         }
       });
@@ -1590,19 +1734,6 @@ function renderData(focusBlockId = null) {
   document.querySelectorAll(".group\\/block").forEach((block) => {
     window.tocObserver.observe(block);
   });
-
-  // --- AutoAnimate のフリーズ防止（デッドコードの修正） ---
-  if (disableAnimation) {
-    if (container._autoAnimate) {
-      container.removeAttribute("data-auto-animate");
-      container._autoAnimate = undefined; // 内部状態のクリア
-    }
-  } else {
-    if (window.autoAnimate && !container._autoAnimate) {
-      window.autoAnimate(container);
-      container._autoAnimate = true;
-    }
-  }
 }
 
 function updateOrCreateBlockElement(block, existingEl = null) {
@@ -1622,7 +1753,30 @@ function updateOrCreateBlockElement(block, existingEl = null) {
   const mm = String(today.getMonth() + 1).padStart(2, "0");
   const dd = String(today.getDate()).padStart(2, "0");
   const todayStr = `${yyyy}-${mm}-${dd}`;
-  const defaultDate = lastUsedDates[block.id] || todayStr;
+  let defaultDate = lastUsedDates[block.id] || todayStr;
+
+  // 🎯 フィルター期間外によるリセット（アクティブ消失）を防ぐためのスマート補正
+  if (window.currentActiveMonths && window.currentActiveMonths.length > 0) {
+    const isInside = window.currentActiveMonths.some((m) =>
+      defaultDate.startsWith(m),
+    );
+    if (!isInside) {
+      // フィルター内の最新月（最後の月）の月末日をデフォルトにする
+      const sortedMonths = [...window.currentActiveMonths].sort();
+      const targetMonth = sortedMonths[sortedMonths.length - 1]; // 例: "2026-03"
+      if (targetMonth === `${yyyy}-${mm}`) {
+        defaultDate = todayStr; // 今月が含まれているなら今日
+      } else {
+        const [tYear, tMonth] = targetMonth.split("-");
+        const lastDay = new Date(
+          parseInt(tYear, 10),
+          parseInt(tMonth, 10),
+          0,
+        ).getDate();
+        defaultDate = `${targetMonth}-${String(lastDay).padStart(2, "0")}`; // 例: "2026-03-31"
+      }
+    }
+  }
 
   let itemsHtml = "";
   block.children.forEach((item) => {
@@ -1641,7 +1795,7 @@ function updateOrCreateBlockElement(block, existingEl = null) {
     }
 
     const accStr = item.account || "";
-    let accountDisp = `<input type="text" data-id="${item.id}" data-field="account" list="account-suggestions" value="${escapeHtml(accStr)}" placeholder="科目" oninput="setDirty(true)" onkeydown="if(event.key==='Enter' && !event.isComposing){event.preventDefault();this.blur();}" onblur="updateRecord(${item.id}, 'account', this.value, this)" class="text-xs text-blue-600 bg-blue-50 border border-blue-200 px-1.5 py-0.5 rounded mr-2 outline-none focus:ring-2 focus:ring-blue-400 focus:bg-blue-100 cursor-text transition-colors hover:bg-blue-100 w-[60px] sm:w-[72px] shrink-0 text-center placeholder-blue-300">`;
+    let accountDisp = `<input type="text" data-id="${item.id}" data-field="account" list="account-suggestions" value="${escapeHtml(accStr)}" placeholder="科目" onfocus="this.select()" oninput="setDirty(true)" onkeydown="if(event.key==='Enter' && !event.isComposing){event.preventDefault();this.blur();}" onblur="updateRecord(${item.id}, 'account', this.value, this)" class="text-xs text-blue-600 bg-blue-50 border border-blue-200 px-1.5 py-0.5 rounded mr-2 outline-none focus:ring-2 focus:ring-blue-400 focus:bg-blue-100 cursor-text transition-colors hover:bg-blue-100 w-[60px] sm:w-[72px] shrink-0 text-center placeholder-blue-300">`;
 
     itemsHtml += `
       <div class="flex justify-between items-center px-4 sm:px-8 py-3.5 border-b border-slate-50 group/item hover:bg-slate-50/80 transition-colors">
@@ -1651,7 +1805,7 @@ function updateOrCreateBlockElement(block, existingEl = null) {
           <span data-id="${item.id}" data-field="memo" contenteditable="true" oninput="setDirty(true)" onpaste="handlePlainTextPaste(event)" onkeydown="if(event.key==='Enter' && !event.isComposing){event.preventDefault();this.blur();}" onblur="updateRecord(${item.id}, 'memo', this.innerText, this)" class="text-slate-700 font-medium truncate outline-none focus:bg-blue-50 focus:ring-2 focus:ring-blue-200 px-1 rounded cursor-text transition-colors empty:inline-block empty:min-w-12 empty:bg-slate-100 empty:after:content-['✎_未入力'] empty:after:text-slate-400 empty:after:text-xs empty:after:font-normal">${escapeHtml(item.memo)}</span>
         </div>
         <div class="flex items-center space-x-2 sm:space-x-4 ml-2 sm:ml-auto shrink-0">
-          <span data-id="${item.id}" data-field="amount" contenteditable="true" oninput="setDirty(true)" onfocus="window.getSelection().selectAllChildren(this)" onpaste="handlePlainTextPaste(event)" onkeydown="if(event.key==='Enter' && !event.isComposing){event.preventDefault();this.blur();}" onblur="updateRecord(${item.id}, 'amount', this.innerText, this)" class="font-medium font-mono text-slate-900 outline-none focus:bg-blue-50 focus:ring-2 focus:ring-blue-200 px-1 rounded cursor-text transition-colors empty:inline-block empty:min-w-8 empty:bg-slate-100 empty:after:content-['0'] empty:after:text-slate-400 empty:after:text-xs empty:after:font-sans">${item.amount !== null && item.amount !== "" && item.amount !== undefined ? item.amount.toLocaleString("ja-JP") : ""}</span><span class="text-slate-400 text-xs font-sans">円</span>
+          <span data-id="${item.id}" data-field="amount" contenteditable="true" oninput="setDirty(true)" onfocus="window.getSelection().selectAllChildren(this)" onpaste="handlePlainTextPaste(event)" onkeydown="if(event.key==='Enter' && !event.isComposing){event.preventDefault();this.blur();}" onblur="updateRecord(${item.id}, 'amount', this.innerText, this)" class="font-medium tabular-nums tracking-tight text-slate-900 outline-none focus:bg-blue-50 focus:ring-2 focus:ring-blue-200 px-1 rounded cursor-text transition-colors empty:inline-block empty:min-w-8 empty:bg-slate-100 empty:after:content-['0'] empty:after:text-slate-400 empty:after:text-xs empty:after:font-sans">${item.amount !== null && item.amount !== "" && item.amount !== undefined ? item.amount.toLocaleString("ja-JP") : ""}</span><span class="text-slate-400 text-xs font-sans">円</span>
           <button onclick="deleteRecord(${item.id})" aria-label="削除" class="text-slate-300 hover:text-red-500 md:opacity-0 md:group-hover/item:opacity-100 focus:opacity-100 focus:outline-none focus:ring-2 focus:ring-red-200 rounded transition-opacity text-xl leading-none -mt-0.5" title="削除">&times;</button>
         </div>
       </div>
@@ -1674,7 +1828,7 @@ function updateOrCreateBlockElement(block, existingEl = null) {
         <h2 data-id="${block.id}" data-field="memo" contenteditable="true" oninput="setDirty(true)" onpaste="handlePlainTextPaste(event)" onclick="event.stopPropagation()" onkeydown="if(event.key==='Enter' && !event.isComposing){event.preventDefault();this.blur();}" onblur="updateRecord(${block.id}, 'memo', this.innerText, this)" class="text-xl font-extrabold text-slate-900 tracking-tight outline-none focus:bg-white focus:ring-2 focus:ring-primary/30 px-1 rounded cursor-text truncate transition-colors empty:inline-block empty:min-w-20 empty:bg-slate-100 empty:after:content-['✎_タイトル未入力'] empty:after:text-slate-400 empty:after:text-sm empty:after:font-normal">${escapeHtml(block.memo)}</h2>
       </div>
       <div class="flex items-center shrink-0">
-        <div class="font-bold font-mono text-slate-900 text-lg"><span id="block-total-${block.id}">${blockTotal.toLocaleString("ja-JP")}</span> <span class="text-slate-400 text-sm font-sans">円</span></div>
+        <div class="font-bold tabular-nums tracking-tight text-slate-900 text-lg"><span id="block-total-${block.id}">${blockTotal.toLocaleString("ja-JP")}</span> <span class="text-slate-400 text-sm font-sans">円</span></div>
         <div class="flex items-center pl-4 border-l border-slate-200/50 ml-4 shrink-0 h-8">
           <button onclick="event.stopPropagation(); deleteRecord(${block.id})" aria-label="ブロックを削除" class="w-8 h-8 flex items-center justify-center rounded text-slate-300 hover:bg-red-50 hover:text-red-500 md:opacity-0 md:group-hover/block:opacity-100 focus:opacity-100 focus:outline-none focus:ring-2 focus:ring-red-200 transition-all cursor-pointer" title="ブロックを丸ごと削除">
             <svg class="w-5 h-5"><use href="#icon-trash"></use></svg>
@@ -1695,18 +1849,18 @@ function updateOrCreateBlockElement(block, existingEl = null) {
         <span class="text-primary text-xl leading-none font-light hidden sm:inline">+</span>
 
         <div class="flex items-center gap-2 sm:gap-3 w-full sm:w-auto">
-          <span class="text-primary text-xl leading-none font-light sm:hidden">+</span>
+          <button type="submit" aria-label="明細を追加" class="text-primary bg-primary/10 hover:bg-primary/20 rounded-full w-8 h-8 flex items-center justify-center text-xl leading-none font-light sm:hidden transition-colors outline-none focus:ring-2 focus:ring-primary/50 shrink-0">+</button>
           <div class="flex items-center bg-slate-50 rounded-md px-1 py-1 border border-slate-200 transition-colors">
             <button type="button" onclick="adjustDate(this, -1)" aria-label="1日戻す" class="text-slate-400 hover:text-slate-800 w-8 h-8 flex items-center justify-center font-bold cursor-pointer outline-none transition-colors touch-manipulation" title="-1日">-</button>
             <input type="date" class="item-date bg-transparent border-0 focus:ring-0 p-0 text-slate-600 text-xs w-[110px] text-center outline-none cursor-pointer" value="${defaultDate}" oninput="setDirty(true)">
             <button type="button" onclick="adjustDate(this, 1)" aria-label="1日進める" class="text-slate-400 hover:text-slate-800 w-8 h-8 flex items-center justify-center font-bold cursor-pointer outline-none transition-colors touch-manipulation" title="+1日">+</button>
           </div>
-          <input type="text" placeholder="科目(任意)" value="" list="account-suggestions" oninput="setDirty(true)" onfocus="this.select()" onkeydown="if(event.key==='Enter'){event.preventDefault();this.closest('form').querySelector('.item-memo').focus();}" class="item-account bg-transparent border-0 focus:ring-0 p-0 text-slate-600 placeholder-slate-400 w-16 sm:w-20 text-sm outline-none text-center">
+          <input type="text" placeholder="科目(任意)" value="" list="account-suggestions" oninput="setDirty(true)" onfocus="this.select()" onkeydown="if(event.key==='Enter'){ if(event.isComposing) return; event.preventDefault();this.closest('form').querySelector('.item-memo').focus();}" class="item-account bg-transparent border-0 focus:ring-0 p-0 text-slate-600 placeholder-slate-400 w-16 sm:w-20 text-sm outline-none text-center">
         </div>
 
         <div class="flex items-center gap-2 sm:gap-3 w-full sm:w-auto sm:flex-1 pl-6 sm:pl-0 mt-2 sm:mt-0">
-          <input type="text" placeholder="明細を追加..." list="memo-suggestions" oninput="setDirty(true)" onblur="autoSuggestAccount(this)" onkeydown="if(event.key==='Enter'){event.preventDefault();this.closest('form').querySelector('.item-amount').focus();}" class="item-memo bg-transparent border-0 focus:ring-0 p-0 text-slate-900 placeholder-slate-400 flex-1 text-sm font-medium outline-none min-w-[100px]">
-          <input type="text" inputmode="decimal" placeholder="金額 (数式OK)" class="item-amount bg-transparent border-0 focus:ring-0 p-0 text-right font-mono text-slate-900 placeholder-slate-400 w-24 sm:w-32 text-sm outline-none" oninput="setDirty(true)">
+          <input type="text" placeholder="明細を追加..." list="memo-suggestions" oninput="setDirty(true)" onblur="autoSuggestAccount(this)" onkeydown="if(event.key==='Enter'){ if(event.isComposing) return; event.preventDefault();this.closest('form').querySelector('.item-amount').focus();}" class="item-memo bg-transparent border-0 focus:ring-0 p-0 text-slate-900 placeholder-slate-400 flex-1 text-sm font-medium outline-none min-w-[100px]">
+          <input type="text" inputmode="decimal" placeholder="金額 (数式OK)" class="item-amount bg-transparent border-0 focus:ring-0 p-0 text-right tabular-nums tracking-tight text-slate-900 placeholder-slate-400 w-24 sm:w-32 text-sm outline-none" oninput="setDirty(true)" onkeydown="if(event.key==='Enter' && event.isComposing){ event.stopPropagation(); }">
         </div>
         <button type="submit" class="hidden">追加</button>
       </form>
@@ -1721,22 +1875,38 @@ function saveTemplate(blockId) {
   if (!db) return;
 
   // ブロックのタイトルを取得
-  const blockRes = db.exec("SELECT memo FROM records WHERE id = ?", [blockId]);
-  if (blockRes.length === 0) return;
-  const blockMemo = blockRes[0].values[0][0] || "名称未設定";
+  let blockMemo = "名称未設定";
+  let blockStmt;
+  try {
+    blockStmt = db.prepare("SELECT memo FROM records WHERE id = ?");
+    blockStmt.bind([blockId]);
+    if (blockStmt.step()) {
+      blockMemo = blockStmt.get()[0] || "名称未設定";
+    } else {
+      return;
+    }
+  } finally {
+    if (blockStmt) blockStmt.free();
+  }
 
   // 子要素（明細）の構成を取得
-  const res = db.exec(
-    "SELECT memo, account, amount FROM records WHERE parent_id = ? ORDER BY sort_order ASC, id ASC",
-    [blockId],
-  );
   let items = [];
-  if (res.length > 0) {
-    items = res[0].values.map((row) => ({
-      memo: row[0],
-      account: row[1],
-      amount: row[2],
-    }));
+  let itemsStmt;
+  try {
+    itemsStmt = db.prepare(
+      "SELECT memo, account, amount FROM records WHERE parent_id = ? ORDER BY sort_order ASC, id ASC",
+    );
+    itemsStmt.bind([blockId]);
+    while (itemsStmt.step()) {
+      const row = itemsStmt.get();
+      items.push({
+        memo: row[0],
+        account: row[1],
+        amount: row[2],
+      });
+    }
+  } finally {
+    if (itemsStmt) itemsStmt.free();
   }
 
   let tplName = prompt(
@@ -1760,19 +1930,34 @@ function saveTemplate(blockId) {
 
 function insertTemplate(templateId) {
   if (!db) return;
-  const res = db.exec("SELECT name, data FROM templates WHERE id = ?", [
-    templateId,
-  ]);
-  if (res.length === 0) return;
-  const tplName = res[0].values[0][0];
+
+  let tplName = "";
+  let rawData = "[]";
+  let stmt;
+  try {
+    stmt = db.prepare("SELECT name, data FROM templates WHERE id = ?");
+    stmt.bind([templateId]);
+    if (!stmt.step()) return;
+    const row = stmt.get();
+    tplName = row[0];
+    rawData = row[1];
+  } finally {
+    if (stmt) stmt.free();
+  }
 
   let tplData = [];
   try {
-    tplData = JSON.parse(res[0].values[0][1] || "[]");
+    tplData = JSON.parse(rawData || "[]");
   } catch (e) {
     alert(
       "テンプレートデータの読み込みに失敗しました。データが破損している可能性があります。",
     );
+    return;
+  }
+
+  // 万が一パース結果がオブジェクト等で配列でない場合のクラッシュ(TypeError)を防止
+  if (!Array.isArray(tplData)) {
+    alert("テンプレートデータが破損しています（配列ではありません）。");
     return;
   }
 
@@ -1853,15 +2038,44 @@ async function saveGrindFile(isSaveAs = false) {
   if (isSaving) return;
   isSaving = true;
 
-  try {
-    // 保存前に、現在入力中の要素のフォーカスを外してデータ(DB)を確定させる
+  // 🎯 God-Rank: 現在フォーカス中の要素を特定・記憶する
+  let activeSelector = null;
+  const activeEl = document.activeElement;
+  if (
+    activeEl &&
+    typeof activeEl.blur === "function" &&
+    activeEl.tagName !== "BODY"
+  ) {
     if (
-      document.activeElement &&
-      typeof document.activeElement.blur === "function"
+      typeof activeEl.hasAttribute === "function" &&
+      activeEl.hasAttribute("data-id") &&
+      activeEl.hasAttribute("data-field")
     ) {
-      document.activeElement.blur();
+      activeSelector = `[data-id="${activeEl.getAttribute("data-id")}"][data-field="${activeEl.getAttribute("data-field")}"]`;
+    } else if (activeEl.classList.contains("item-memo")) {
+      const form = activeEl.closest("form");
+      if (form) activeSelector = `#${form.id} .item-memo`;
+    } else if (activeEl.classList.contains("item-amount")) {
+      const form = activeEl.closest("form");
+      if (form) activeSelector = `#${form.id} .item-amount`;
+    } else if (activeEl.classList.contains("item-account")) {
+      const form = activeEl.closest("form");
+      if (form) activeSelector = `#${form.id} .item-account`;
+    } else if (activeEl.classList.contains("item-date")) {
+      const form = activeEl.closest("form");
+      if (form) activeSelector = `#${form.id} .item-date`;
+    } else if (activeEl.id) {
+      activeSelector = `#${activeEl.id}`;
+    } else if (activeEl.className && typeof activeEl.className === "string") {
+      const firstClass = activeEl.className.trim().split(" ")[0];
+      if (firstClass) {
+        activeSelector = `.${CSS.escape(firstClass)}`;
+      }
     }
+    activeEl.blur(); // 一旦フォーカスを外してDBに値を確定(UPDATE)させる
+  }
 
+  try {
     // ★ 抽出前にDBをデフラグし、ファイルサイズを最小化する
     db.run("VACUUM");
 
@@ -2004,6 +2218,32 @@ async function saveGrindFile(isSaveAs = false) {
     console.error("Save failed:", err);
   } finally {
     isSaving = false;
+
+    // 🎯 God-Rank: 保存が終わったら、超高速でフォーカスを元の位置に戻す
+    if (activeSelector) {
+      requestAnimationFrame(() => {
+        try {
+          const el = document.querySelector(activeSelector);
+          if (el) {
+            el.focus({ preventScroll: true });
+            // contenteditable要素なら、カーソルを一番最後に移動させる魔法
+            if (el.hasAttribute("contenteditable")) {
+              const range = document.createRange();
+              const sel = window.getSelection();
+              range.selectNodeContents(el);
+              range.collapse(false);
+              sel.removeAllRanges();
+              sel.addRange(range);
+            }
+          }
+        } catch (e) {
+          console.warn(
+            "フォーカスの復元をスキップしました(不正なセレクタ等)",
+            e,
+          );
+        }
+      });
+    }
   }
 }
 
@@ -2061,6 +2301,16 @@ async function processFileHandle(handle, isDummy = false) {
     migrateDatabase();
 
     loadSettingsFromDb(); // ファイル固有の設定をUIに反映
+
+    // 🎯 ファイル切り替え時のグローバル状態完全リセット（データ汚染防止）
+    lastUsedDates = {};
+    collapsedBlocks.clear();
+    window.currentActiveMonths = null;
+    currentDisplayedTotal = 0;
+
+    const filterEl = document.getElementById("period-filter");
+    if (filterEl) filterEl.value = "all";
+    setActiveQuickPeriodButton(null);
 
     // UI更新の前にハンドルをセットして正しいファイル名を反映させる
     fileHandle = handle;
@@ -2195,9 +2445,19 @@ function exportCSV(format = "yayoi") {
 
   let query = `SELECT c.id, COALESCE(p.memo, '') || ' - ' || COALESCE(c.memo, '') AS memo, c.amount, c.created_at, c.account FROM records c JOIN records p ON c.parent_id = p.id WHERE c.parent_id IS NOT NULL${whereClause} ORDER BY c.id ASC`;
 
-  const res = db.exec(query, params);
+  const values = [];
+  let exportStmt;
+  try {
+    exportStmt = db.prepare(query);
+    exportStmt.bind(params);
+    while (exportStmt.step()) {
+      values.push(exportStmt.get());
+    }
+  } finally {
+    if (exportStmt) exportStmt.free();
+  }
 
-  if (res.length === 0) {
+  if (values.length === 0) {
     alert("エクスポートするデータがありません。");
     return;
   }
@@ -2228,7 +2488,7 @@ function exportCSV(format = "yayoi") {
     csvRows.push('"ID","日付","勘定科目","摘要","金額"');
   }
 
-  res[0].values.forEach((row) => {
+  values.forEach((row) => {
     // row[0]: id, row[1]: memo, row[2]: amount, row[3]: created_at
     const memo = row[1] ? row[1].toString() : "";
     const amount = row[2] || 0;
@@ -2372,6 +2632,12 @@ function importCSV(event) {
   reader.onload = function (e) {
     pendingCSVBuffer = e.target.result; // ArrayBufferを保存
     showCSVModal();
+    event.target.value = "";
+  };
+  reader.onerror = function () {
+    alert(
+      "ファイルの読み込みに失敗しました。ファイルが破損しているか、メモリが不足しています。",
+    );
     event.target.value = "";
   };
   reader.readAsArrayBuffer(file); // ArrayBufferとして読み込む
@@ -2518,7 +2784,7 @@ function renderCSVPreview() {
   );
 
   // ヘッダーの構築
-  let thHtml = `<th class="px-3 py-2 w-8 text-center border-r border-gray-200 dark:border-gray-800">行</th>`;
+  let thHtml = `<th class="px-3 py-2 w-8 text-center border-r border-gray-200">行</th>`;
   for (let i = 0; i < maxCols; i++) {
     let label = "";
     let badgeClass = "bg-slate-200 text-slate-500";
@@ -2606,6 +2872,9 @@ function executeCSVImport() {
   closeCSVModal();
 
   let successCount = 0;
+  let suggestStmt = null;
+  let insertStmt = null;
+
   db.run("BEGIN TRANSACTION;");
   try {
     db.run("INSERT INTO records (memo, amount) VALUES (?, ?)", [
@@ -2629,7 +2898,6 @@ function executeCSVImport() {
       startIndex + MAX_IMPORT_ROWS,
     );
 
-    let suggestStmt = null;
     try {
       suggestStmt = db.prepare(
         "SELECT account FROM records WHERE parent_id IS NOT NULL AND memo = ? AND account IS NOT NULL AND account != '' ORDER BY id DESC LIMIT 1",
@@ -2638,7 +2906,6 @@ function executeCSVImport() {
       console.warn("科目サジェストSQLの準備に失敗しました", e);
     }
 
-    let insertStmt = null;
     try {
       insertStmt = db.prepare(
         "INSERT INTO records (parent_id, memo, amount, created_at, account) VALUES (?, ?, ?, ?, ?)",
@@ -2742,9 +3009,6 @@ function executeCSVImport() {
       }
     }
 
-    if (suggestStmt) suggestStmt.free();
-    if (insertStmt) insertStmt.free();
-
     if (successCount === 0) {
       db.run("DELETE FROM records WHERE id = ?", [parentId]);
     }
@@ -2767,6 +3031,9 @@ function executeCSVImport() {
     db.run("ROLLBACK;");
     alert("インポート中にエラーが発生しました。");
     console.error(err);
+  } finally {
+    if (suggestStmt) suggestStmt.free();
+    if (insertStmt) insertStmt.free();
   }
   renderData();
 }
@@ -2855,6 +3122,7 @@ window.addEventListener("appinstalled", () => {
 // --- コマンドパレット制御 ---
 let isCommandPaletteOpen = false;
 let selectedCommandIndex = 0;
+let prePaletteActiveElement = null; // 🎯 God-Rank用: パレットを開く直前のフォーカス要素
 const commandsList = [
   {
     id: "save",
@@ -2910,11 +3178,29 @@ const commandsList = [
     title: "Markdownとしてコピー (GrindSite用)",
     action: copyAsMarkdown,
   },
+  {
+    id: "expandall",
+    icon: '<svg class="w-5 h-5"><use href="#icon-chevron-down"></use></svg>',
+    title: "すべてのブロックを展開する",
+    action: () => toggleAllBlocks(false),
+  },
+  {
+    id: "collapseall",
+    icon: '<svg class="w-5 h-5" style="transform: rotate(-90deg)"><use href="#icon-chevron-down"></use></svg>',
+    title: "すべてのブロックを折りたたむ",
+    action: () => toggleAllBlocks(true),
+  },
 ];
 
 function toggleCommandPalette() {
   const palette = document.getElementById("cmd-palette");
   const input = document.getElementById("cmd-input");
+
+  if (!isCommandPaletteOpen) {
+    // 🎯 開く瞬間に、どこにフォーカスしていたかを記憶
+    prePaletteActiveElement = document.activeElement;
+  }
+
   isCommandPaletteOpen = !isCommandPaletteOpen;
   if (isCommandPaletteOpen) {
     palette.classList.remove("hidden");
@@ -2981,20 +3267,68 @@ function getFilteredCommands(query) {
 
   // 入力が数式として評価できる場合、一番上に「電卓コマンド」を挿入
   if (q.match(/[0-9]/) && q.match(/[+\-*/×÷ー−]/)) {
-    const calcResult = evaluateMath(q);
-    if (calcResult !== null) {
-      filtered.unshift({
-        id: "calculator",
-        icon: '<svg class="w-5 h-5 text-green-500"><use href="#icon-sparkles"></use></svg>',
-        title: `= ${calcResult.toLocaleString("ja-JP")} <span class="text-xs text-slate-400 ml-2">(Enterでコピー)</span>`,
-        action: () => {
-          navigator.clipboard.writeText(calcResult.toString());
-          showToast(
-            `${calcResult.toLocaleString("ja-JP")} をコピーしました`,
-            '<span class="text-green-400">📋</span>',
-          );
-        },
-      });
+    try {
+      const calcResult = evaluateMath(q);
+      if (calcResult !== null) {
+        filtered.unshift({
+          id: "calculator",
+          icon: '<svg class="w-5 h-5 text-green-500"><use href="#icon-sparkles"></use></svg>',
+          title: `= ${calcResult.toLocaleString("ja-JP")} <span class="text-xs text-slate-400 ml-2">(Enterで適用またはコピー)</span>`,
+          action: () => {
+            const resultStr = calcResult.toString();
+            navigator.clipboard.writeText(resultStr);
+
+            // 🎯 God-Rank: パレットを開く直前が入力欄だった場合、直接代入する
+            if (prePaletteActiveElement) {
+              if (prePaletteActiveElement.hasAttribute("contenteditable")) {
+                prePaletteActiveElement.innerText = resultStr;
+                prePaletteActiveElement.focus();
+
+                const range = document.createRange();
+                const sel = window.getSelection();
+                range.selectNodeContents(prePaletteActiveElement);
+                range.collapse(false);
+                sel.removeAllRanges();
+                sel.addRange(range);
+
+                updateRecord(
+                  prePaletteActiveElement.getAttribute("data-id"),
+                  prePaletteActiveElement.getAttribute("data-field"),
+                  resultStr,
+                  prePaletteActiveElement,
+                );
+                showToast(
+                  `${resultStr} を直接入力しました`,
+                  '<span class="text-green-400">✨</span>',
+                );
+                return;
+              } else if (
+                prePaletteActiveElement.tagName === "INPUT" ||
+                prePaletteActiveElement.tagName === "TEXTAREA"
+              ) {
+                prePaletteActiveElement.value = resultStr;
+                prePaletteActiveElement.focus();
+                setDirty(true);
+                prePaletteActiveElement.dispatchEvent(
+                  new Event("input", { bubbles: true }),
+                );
+                showToast(
+                  `${resultStr} を直接入力しました`,
+                  '<span class="text-green-400">✨</span>',
+                );
+                return;
+              }
+            }
+
+            showToast(
+              `${calcResult.toLocaleString("ja-JP")} をコピーしました`,
+              '<span class="text-green-400">📋</span>',
+            );
+          },
+        });
+      }
+    } catch (e) {
+      console.error("Calculator command failed:", e);
     }
   }
   return filtered;
@@ -3091,7 +3425,11 @@ document.addEventListener("keydown", (e) => {
       selectedCommandIndex =
         (selectedCommandIndex - 1 + filtered.length) % filtered.length;
       renderCommandList(input.value);
-    } else if (e.key === "Enter" && filtered[selectedCommandIndex]) {
+    } else if (
+      e.key === "Enter" &&
+      !e.isComposing &&
+      filtered[selectedCommandIndex]
+    ) {
       e.preventDefault();
       const cmd = filtered[selectedCommandIndex];
       if (!cmd.keepOpen) {
@@ -3128,17 +3466,21 @@ document.addEventListener("DOMContentLoaded", () => {
 
 // --- マルチタブ起動によるデータ競合の防止 ---
 const bc = new BroadcastChannel("grindmoney_app_channel");
+let hasAlerted = false;
 
 bc.onmessage = (e) => {
   if (e.data === "ping") {
     bc.postMessage("pong"); // すでに開いているタブが応答する
   } else if (e.data === "pong") {
     // 自分が後から開いたタブだった場合
-    alert(
-      "⚠️ GrindMoneyは既に別のタブまたはウィンドウで開かれています。\n\nデータ競合（バックアップの巻き戻り）を防ぐため、このタブでの編集は行わないでください。",
-    );
-    document.body.style.opacity = "0.5";
-    document.body.style.pointerEvents = "none";
+    if (!hasAlerted) {
+      hasAlerted = true;
+      alert(
+        "⚠️ GrindMoneyは既に別のタブまたはウィンドウで開かれています。\n\nデータ競合（バックアップの巻き戻り）を防ぐため、このタブでの編集は行わないでください。",
+      );
+      document.body.style.opacity = "0.5";
+      document.body.style.pointerEvents = "none";
+    }
   }
 };
 bc.postMessage("ping");
@@ -3165,99 +3507,57 @@ function togglePasswordVisibility() {
 }
 
 // --- 科目サジェスト (オートコンプリート) 機能 ---
+const baseAccountingDict = [
+  "売上高",
+  "現金",
+  "普通預金",
+  "当座預金",
+  "売掛金",
+  "買掛金",
+  "未払金",
+  "預り金",
+  "前払金",
+  "前受金",
+  "立替金",
+  "仮払金",
+  "仮受金",
+  "事業主貸",
+  "事業主借",
+  "元入金",
+  "役員借入金",
+  "役員貸付金",
+  "租税公課",
+  "荷造運賃",
+  "水道光熱費",
+  "旅費交通費",
+  "通信費",
+  "広告宣伝費",
+  "接待交際費",
+  "損害保険料",
+  "修繕費",
+  "消耗品費",
+  "減価償却費",
+  "福利厚生費",
+  "給料手当",
+  "専従者給与",
+  "外注工賃",
+  "利子割引料",
+  "地代家賃",
+  "貸倒金",
+  "雑費",
+  "支払手数料",
+  "会議費",
+  "新聞図書費",
+  "車両費",
+  "諸会費",
+  "リース料",
+];
+
 const accountDictionaries = {
   custom: [], // ユーザー定義の辞書
   none: [],
-  yayoi: [
-    "売上高",
-    "現金",
-    "普通預金",
-    "当座預金",
-    "売掛金",
-    "買掛金",
-    "未払金",
-    "預り金",
-    "前払金",
-    "前受金",
-    "立替金",
-    "仮払金",
-    "仮受金",
-    "事業主貸",
-    "事業主借",
-    "元入金",
-    "役員借入金",
-    "役員貸付金",
-    "租税公課",
-    "荷造運賃",
-    "水道光熱費",
-    "旅費交通費",
-    "通信費",
-    "広告宣伝費",
-    "接待交際費",
-    "損害保険料",
-    "修繕費",
-    "消耗品費",
-    "減価償却費",
-    "福利厚生費",
-    "給料手当",
-    "専従者給与",
-    "外注工賃",
-    "利子割引料",
-    "地代家賃",
-    "貸倒金",
-    "雑費",
-    "支払手数料",
-    "会議費",
-    "新聞図書費",
-    "車両費",
-    "諸会費",
-    "リース料",
-  ],
-  freee: [
-    "売上高",
-    "現金",
-    "普通預金",
-    "当座預金",
-    "売掛金",
-    "買掛金",
-    "未払金",
-    "預り金",
-    "前払金",
-    "前受金",
-    "立替金",
-    "仮払金",
-    "仮受金",
-    "事業主貸",
-    "事業主借",
-    "元入金",
-    "役員借入金",
-    "役員貸付金",
-    "租税公課",
-    "荷造運賃",
-    "水道光熱費",
-    "旅費交通費",
-    "通信費",
-    "広告宣伝費",
-    "接待交際費",
-    "損害保険料",
-    "修繕費",
-    "消耗品費",
-    "減価償却費",
-    "福利厚生費",
-    "給料手当",
-    "専従者給与",
-    "外注工賃",
-    "利子割引料",
-    "地代家賃",
-    "貸倒金",
-    "雑費",
-    "支払手数料",
-    "会議費",
-    "新聞図書費",
-    "車両費",
-    "諸会費",
-    "リース料",
-  ],
+  yayoi: baseAccountingDict,
+  freee: baseAccountingDict,
   mf: [
     "売上高",
     "現金",
@@ -3303,51 +3603,7 @@ const accountDictionaries = {
     "諸会費",
     "リース料",
   ],
-  freeway: [
-    "売上高",
-    "現金",
-    "普通預金",
-    "当座預金",
-    "売掛金",
-    "買掛金",
-    "未払金",
-    "預り金",
-    "前払金",
-    "前受金",
-    "立替金",
-    "仮払金",
-    "仮受金",
-    "事業主貸",
-    "事業主借",
-    "元入金",
-    "役員借入金",
-    "役員貸付金",
-    "租税公課",
-    "荷造運賃",
-    "水道光熱費",
-    "旅費交通費",
-    "通信費",
-    "広告宣伝費",
-    "接待交際費",
-    "損害保険料",
-    "修繕費",
-    "消耗品費",
-    "減価償却費",
-    "福利厚生費",
-    "給料手当",
-    "専従者給与",
-    "外注工賃",
-    "利子割引料",
-    "地代家賃",
-    "貸倒金",
-    "雑費",
-    "支払手数料",
-    "会議費",
-    "新聞図書費",
-    "車両費",
-    "諸会費",
-    "リース料",
-  ],
+  freeway: baseAccountingDict,
 };
 
 function changeAccountDict() {
@@ -3363,11 +3619,13 @@ function renderAccountSuggestions(dictKey) {
   datalist.innerHTML = "";
 
   const dict = accountDictionaries[dictKey] || [];
+  const fragment = document.createDocumentFragment();
   dict.forEach((account) => {
     const option = document.createElement("option");
     option.value = account;
-    datalist.appendChild(option);
+    fragment.appendChild(option);
   });
+  datalist.appendChild(fragment);
 }
 
 function loadCustomDict() {
@@ -3594,7 +3852,7 @@ function showTagModal(tag, data) {
       <tr class="hover:bg-slate-50 transition-colors border-b border-slate-50 last:border-0">
         <td class="py-4 px-6 w-20 text-xs text-slate-400 font-mono">${dateDisp}</td>
         <td class="py-4 px-4 text-slate-700 font-medium">${escapeHtml(item.memo)}</td>
-        <td class="py-4 px-6 text-right font-mono font-bold text-slate-600">¥${item.amount.toLocaleString("ja-JP")}</td>
+        <td class="py-4 px-6 text-right tabular-nums tracking-tight font-bold text-slate-600">¥${item.amount.toLocaleString("ja-JP")}</td>
       </tr>
     `;
   });
@@ -3756,14 +4014,6 @@ document.addEventListener("drop", async (e) => {
       await processFileHandle(dummyHandle, true);
     }
   } else if (file.name.endsWith(".csv")) {
-    if (isDirty) {
-      if (
-        !confirm(
-          "未保存のデータがあります。変更を破棄してCSVをインポートしますか？",
-        )
-      )
-        return;
-    }
     // 隠された <input type="file"> を利用して、既存のインポートフローに流す
     const csvInput = document.getElementById("csv-input");
     if (csvInput) {
@@ -3827,6 +4077,9 @@ document.addEventListener("visibilitychange", () => {
           .transaction(STORE_NAME, "readwrite")
           .objectStore(STORE_NAME);
         store.put(data, "latest_draft");
+      };
+      tx.onerror = (e) => {
+        console.warn("終了時の緊急バックアップがブラウザに拒否されました");
       };
     } catch (e) {
       console.error("Emergency save error", e);

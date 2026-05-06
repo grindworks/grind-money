@@ -15,8 +15,6 @@
 
   <!-- SQLiteをブラウザ(Wasm)で動かすためのライブラリ -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.8.0/sql-wasm.js"></script>
-  <!-- 滑らかな要素のアニメーション (AutoAnimate) -->
-  <script src="https://cdn.jsdelivr.net/npm/@formkit/auto-animate@1.2.2/index.global.js"></script>
   <!-- Favicon -->
   <link rel="icon" href="icon-192.png" type="image/png">
   <link rel="manifest" href="manifest.json">
@@ -27,7 +25,7 @@
 
 <body
   class="bg-slate-50 text-slate-900 font-sans min-h-screen antialiased selection:bg-primary/30 transition-colors duration-300 overscroll-y-none"
-  style="scrollbar-gutter: stable;">
+  style="scrollbar-gutter: stable; overscroll-behavior-y: none;">
 
   <!-- SVG Sprite (Heroicons) -->
   <svg aria-hidden="true" style="position: absolute; width: 0; height: 0; overflow: hidden;" version="1.1"
@@ -111,8 +109,9 @@
     <div class="hidden xl:block w-56 shrink-0 pt-32 relative">
       <nav id="toc-container"
         class="sticky top-24 space-y-1 overflow-y-auto max-h-[80vh] text-sm text-slate-500 scrollbar-hide px-4">
-        <div class="sticky top-0 bg-slate-50 pt-2 pb-4 z-10">
-          <div class="font-bold text-slate-600 mb-2 px-2 uppercase text-[10px] tracking-widest">Index</div>
+        <div class="sticky top-0 bg-slate-50 pt-2 pb-4 z-10 transition-colors">
+          <div class="font-bold text-slate-600 mb-2 px-2 uppercase text-[10px] tracking-widest">
+            Index</div>
           <div class="relative px-2">
             <svg class="w-3 h-3 absolute left-4 top-1/2 -translate-y-1/2 text-slate-400">
               <use href="#icon-search"></use>
@@ -133,14 +132,14 @@
 
         <!-- 左側：タイトル & ファイル名 -->
         <div class="flex flex-col gap-2 min-w-0 max-w-full shrink-0">
-          <h1 class="text-2xl font-extrabold tracking-tight text-slate-900 flex items-center gap-2">
+          <h1 class="text-2xl font-extrabold tracking-tight text-slate-900 flex items-center gap-2 transition-colors">
             <span class="text-primary"><svg class="w-6 h-6">
                 <use href="#icon-money"></use>
               </svg></span> GrindMoney
           </h1>
           <div class="flex items-center">
             <span id="current-filename"
-              class="hidden text-[11px] font-mono font-medium text-slate-500 bg-slate-100 border border-slate-200 px-2 py-0.5 rounded max-w-[250px] truncate"
+              class="hidden text-[11px] font-mono font-medium text-slate-500 bg-slate-100 border border-slate-200 px-2 py-0.5 rounded max-w-[250px] truncate transition-colors"
               title="現在開いているファイル">Unsaved.grind</span>
           </div>
         </div>
@@ -156,7 +155,7 @@
           <!-- 科目辞書選択 -->
           <label for="dict-select" class="sr-only">科目辞書を選択</label>
           <select id="dict-select" onchange="changeAccountDict()"
-            class="bg-white border border-slate-200 text-slate-700 text-xs px-2 py-2 rounded-md outline-none focus:border-primary shadow-sm cursor-pointer"
+            class="bg-white border border-slate-200 text-slate-700 text-xs px-2 py-2 rounded-md outline-none focus:border-primary shadow-sm cursor-pointer transition-colors"
             title="入力時にサジェストする科目辞書を選択">
             <option value="custom">辞書: カスタム</option>
             <option value="none">科目サジェスト: オフ</option>
@@ -211,7 +210,8 @@
             <svg class="w-4 h-4">
               <use href="#icon-search"></use>
             </svg>
-            <span id="cmd-shortcut-key" class="font-mono text-xs border border-slate-300 rounded px-1">⌘K</span>
+            <span id="cmd-shortcut-key"
+              class="font-mono text-xs border border-slate-300 rounded px-1 transition-colors">⌘K</span>
           </button>
 
           <!-- 隠しインプット (コマンドパレットから叩く用) -->
@@ -263,7 +263,7 @@
               <p id="grand-total-label"
                 class="text-[10px] font-bold text-slate-400 mb-1 tracking-[0.2em] uppercase truncate">Total
                 Amount</p>
-              <p class="text-4xl sm:text-5xl md:text-6xl font-black font-mono tracking-tighter bg-gradient-to-br from-slate-900 to-slate-500 bg-clip-text text-transparent break-all"
+              <p class="text-4xl sm:text-5xl md:text-6xl font-black tabular-nums tracking-tight bg-gradient-to-br from-slate-900 to-slate-500 bg-clip-text text-transparent break-all"
                 id="grand-total">
                 <span id="grand-total-num">0</span> <span
                   class="text-xl font-sans font-bold text-slate-400 align-baseline ml-1">JPY</span>
@@ -280,30 +280,30 @@
             <div class="h-4 w-px bg-slate-200 mx-0.5"></div>
             <button onclick="setMultiMonthFilter([1,2,3], this)"
               data-active-classes="!bg-blue-600 !text-white !border-blue-600"
-              class="px-2 py-1 rounded bg-blue-50 border border-blue-100 text-blue-600 text-[10px] font-bold hover:bg-blue-600 hover:text-white transition-colors cursor-pointer shadow-sm">1-3月</button>
+              class="px-2 py-1 rounded bg-blue-50 border border-blue-100 text-blue-600 text-[10px] font-bold hover:bg-blue-600 hover:border-blue-600 hover:text-white transition-colors cursor-pointer shadow-sm">1-3月</button>
             <button onclick="setMultiMonthFilter([4,5,6], this)"
               data-active-classes="!bg-blue-600 !text-white !border-blue-600"
-              class="px-2 py-1 rounded bg-blue-50 border border-blue-100 text-blue-600 text-[10px] font-bold hover:bg-blue-600 hover:text-white transition-colors cursor-pointer shadow-sm">4-6月</button>
+              class="px-2 py-1 rounded bg-blue-50 border border-blue-100 text-blue-600 text-[10px] font-bold hover:bg-blue-600 hover:border-blue-600 hover:text-white transition-colors cursor-pointer shadow-sm">4-6月</button>
             <button onclick="setMultiMonthFilter([7,8,9], this)"
               data-active-classes="!bg-blue-600 !text-white !border-blue-600"
-              class="px-2 py-1 rounded bg-blue-50 border border-blue-100 text-blue-600 text-[10px] font-bold hover:bg-blue-600 hover:text-white transition-colors cursor-pointer shadow-sm">7-9月</button>
+              class="px-2 py-1 rounded bg-blue-50 border border-blue-100 text-blue-600 text-[10px] font-bold hover:bg-blue-600 hover:border-blue-600 hover:text-white transition-colors cursor-pointer shadow-sm">7-9月</button>
             <button onclick="setMultiMonthFilter([10,11,12], this)"
               data-active-classes="!bg-blue-600 !text-white !border-blue-600"
-              class="px-2 py-1 rounded bg-blue-50 border border-blue-100 text-blue-600 text-[10px] font-bold hover:bg-blue-600 hover:text-white transition-colors cursor-pointer shadow-sm">10-12月</button>
+              class="px-2 py-1 rounded bg-blue-50 border border-blue-100 text-blue-600 text-[10px] font-bold hover:bg-blue-600 hover:border-blue-600 hover:text-white transition-colors cursor-pointer shadow-sm">10-12月</button>
             <div class="h-4 w-px bg-slate-200 mx-0.5"></div>
             <button onclick="setCalendarYearFilter(this)"
               data-active-classes="!bg-green-600 !text-white !border-green-600"
-              class="px-2 py-1 rounded bg-green-50 border border-green-100 text-green-700 text-[10px] font-bold hover:bg-green-600 hover:text-white transition-colors cursor-pointer shadow-sm">今年
+              class="px-2 py-1 rounded bg-green-50 border border-green-100 text-green-700 text-[10px] font-bold hover:bg-green-600 hover:border-green-600 hover:text-white transition-colors cursor-pointer shadow-sm">今年
               (1-12月)</button>
             <div class="flex">
-              <button onclick="setPreviousFiscalYearFilter(this)"
+              <button id="prev-fiscal-year-btn" onclick="setPreviousFiscalYearFilter(this)"
                 data-active-classes="!bg-purple-600 !text-white !border-purple-600"
-                class="px-2 py-1 rounded-l bg-purple-50 border border-purple-100 text-purple-700 text-[10px] font-bold hover:bg-purple-600 hover:text-white transition-colors cursor-pointer shadow-sm border-r-0">前年度</button>
+                class="px-2 py-1 rounded-l bg-purple-50 border border-purple-100 text-purple-700 text-[10px] font-bold hover:bg-purple-600 hover:border-purple-600 hover:text-white transition-colors cursor-pointer shadow-sm border-r-0">前年度</button>
               <button id="fiscal-year-btn" onclick="setFiscalYearFilter(this)"
                 data-active-classes="!bg-purple-600 !text-white !border-purple-600"
-                class="px-2 py-1 bg-purple-50 border border-purple-100 text-purple-700 text-[10px] font-bold hover:bg-purple-600 hover:text-white transition-colors cursor-pointer shadow-sm border-r-0">今年度</button>
+                class="px-2 py-1 bg-purple-50 border border-purple-100 text-purple-700 text-[10px] font-bold hover:bg-purple-600 hover:border-purple-600 hover:text-white transition-colors cursor-pointer shadow-sm border-r-0">今年度</button>
               <button id="fiscal-month-gear-btn" onclick="changeFiscalMonth()"
-                class="px-2 py-1 rounded-r bg-purple-50 border border-purple-100 text-purple-500 hover:bg-purple-600 hover:text-white transition-colors cursor-pointer shadow-sm flex items-center justify-center"
+                class="px-2 py-1 rounded-r bg-purple-50 border border-purple-100 text-purple-500 hover:bg-purple-600 hover:border-purple-600 hover:text-white transition-colors cursor-pointer shadow-sm flex items-center justify-center"
                 title="開始月を変更"><svg class="w-3.5 h-3.5">
                   <use href="#icon-cog"></use>
                 </svg></button>
@@ -313,15 +313,34 @@
         </div>
 
         <!-- トップレベルのブロック追加UI -->
-        <form onsubmit="event.preventDefault(); addBlock();" class="mb-10 relative group">
+        <form onsubmit="event.preventDefault(); addBlock();" class="mb-4 relative group">
           <div class="absolute inset-y-0 left-0 flex items-center pointer-events-none">
             <span class="text-slate-400 text-3xl font-light pl-2 group-hover:text-primary transition-colors">+</span>
           </div>
           <label for="new-block-memo" class="sr-only">新しいブロックを作成</label>
           <input type="text" id="new-block-memo" oninput="setDirty(true)" placeholder="新しいブロックを作成 (例: 2026年5月 東京出張) ..."
+            onkeydown="if(event.key==='Enter' && event.isComposing){ event.stopPropagation(); }"
             class="w-full pl-10 pr-4 py-4 bg-transparent border-b-2 border-slate-200 focus:border-primary outline-none text-2xl font-extrabold text-slate-900 placeholder-slate-400 transition-colors">
           <button type="submit" class="hidden">追加</button>
         </form>
+
+        <!-- 展開・折りたたみコントロール (データがない時は非表示) -->
+        <div id="block-controls" class="hidden justify-end items-center gap-4 mb-6 pr-2">
+          <button onclick="toggleAllBlocks(false)"
+            class="text-[11px] font-bold text-slate-400 hover:text-slate-700 transition-colors flex items-center gap-1 focus:outline-none focus:text-primary cursor-pointer">
+            <svg class="w-3.5 h-3.5">
+              <use href="#icon-chevron-down"></use>
+            </svg>
+            すべて展開
+          </button>
+          <button onclick="toggleAllBlocks(true)"
+            class="text-[11px] font-bold text-slate-400 hover:text-slate-700 transition-colors flex items-center gap-1 focus:outline-none focus:text-primary cursor-pointer">
+            <svg class="w-3.5 h-3.5 -rotate-90">
+              <use href="#icon-chevron-down"></use>
+            </svg>
+            すべて折りたたむ
+          </button>
+        </div>
 
         <!-- ブロックがレンダリングされるコンテナ -->
         <div id="blocks-container" class="space-y-6"></div>
@@ -465,10 +484,10 @@
           class="px-6 py-5 border-b border-slate-100 flex justify-between items-center bg-slate-50/80 backdrop-blur-md">
           <h3 class="text-lg font-bold text-slate-900 flex items-center gap-2">
             <span id="tag-modal-title"
-              class="bg-primary-50 text-primary border border-primary/20 px-2 py-1 rounded-md text-sm tracking-widest font-mono">#TAG</span>
+              class="bg-primary-50 text-primary border border-primary/20 px-2 py-1 rounded-md text-sm tracking-widest font-mono truncate max-w-[200px] sm:max-w-xs inline-block align-bottom">#TAG</span>
           </h3>
           <div class="flex items-center gap-4">
-            <span id="tag-modal-total" class="font-mono text-2xl font-black text-slate-800">¥0</span>
+            <span id="tag-modal-total" class="tabular-nums tracking-tight text-2xl font-black text-slate-800">¥0</span>
             <button onclick="closeTagModal()"
               class="text-slate-400 hover:text-slate-600 text-3xl leading-none transition-colors">&times;</button>
           </div>
