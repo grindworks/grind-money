@@ -1760,9 +1760,14 @@ function renderData(focusBlockId = null) {
             );
             const tocContainer = document.getElementById("toc-container");
             if (tocContainer && !tocContainer.matches(":hover")) {
-              activeToc.scrollIntoView({
+              // scrollIntoViewはページ全体のスクロールを阻害してカクつきを生むため、コンテナ内の相対位置で安全にスクロールさせる
+              const scrollPos =
+                activeToc.offsetTop -
+                tocContainer.clientHeight / 2 +
+                activeToc.clientHeight / 2;
+              tocContainer.scrollTo({
+                top: scrollPos,
                 behavior: "smooth",
-                block: "nearest",
               });
             }
           }
@@ -1846,7 +1851,7 @@ function updateOrCreateBlockElement(block, existingEl = null) {
             " text-slate-500 bg-slate-100 border-slate-200 focus:ring-blue-200 hover:bg-slate-200";
         }
 
-        dateDisp = `<span data-id="${item.id}" data-field="created_at" data-year="${yyyy}" contenteditable="true" oninput="setDirty(true)" onfocus="window.getSelection().selectAllChildren(this)" onpaste="handlePlainTextPaste(event)" onkeydown="if(event.key==='Enter' && !event.isComposing){event.preventDefault();this.blur();}" onblur="updateRecord(${item.id}, 'created_at', this.innerText, this)" class="${dateClasses}" title="${dateTitle}">${imm}/${idd}</span>`;
+        dateDisp = `<span data-id="${item.id}" data-field="created_at" data-year="${yyyy}" contenteditable="true" oninput="setDirty(true)" onfocus="window.getSelection().selectAllChildren(this)" onpaste="handlePlainTextPaste(event)" onkeydown="if(event.key==='Enter' && !event.isComposing){event.preventDefault();this.blur();}else if(event.key==='Tab' && !event.shiftKey){event.preventDefault();this.blur();requestAnimationFrame(()=>{const amt=document.querySelector('[data-id=\\'${item.id}\\'][data-field=\\'amount\\']');if(amt){amt.focus();window.getSelection().selectAllChildren(amt);}})}" onblur="updateRecord(${item.id}, 'created_at', this.innerText, this)" class="${dateClasses}" title="${dateTitle}">${imm}/${idd}</span>`;
       }
     }
 
