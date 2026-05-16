@@ -1,7 +1,8 @@
 {
   "livePreview.defaultPreviewPath": "/index.html",
   "files.associations": {
-    "*.grind": "sqlite"
+    "*.grind": "sqlite",
+    "*.money": "sqlite"
   },
   "css.lint.propertyIgnoredDueToDisplay": "ignore"
 }

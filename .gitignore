@@ -1,5 +1,6 @@
 # 個人データ・エクスポートファイル
 *.grind
+*.money
 *.sqlite
 *.csv
 

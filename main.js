@@ -170,7 +170,7 @@ function setDirty(state) {
 
   // タブのタイトルとファイル名バッジの反映
   const fileName =
-    fileHandle && fileHandle.name ? fileHandle.name : "Unsaved.grind";
+    fileHandle && fileHandle.name ? fileHandle.name : "Unsaved.money";
   const titleBase = `${fileName} - GrindMoney`;
   document.title = state ? `* ${titleBase}` : titleBase;
   const filenameBadge = document.getElementById("current-filename");
@@ -516,7 +516,7 @@ async function initSQLite() {
       // 新規の空のデータベースを作成
       db = new SQL.Database();
 
-      // テーブルの作成（これが .grind ファイルの骨格になります）
+      // テーブルの作成（これが .money ファイルの骨格になります）
       db.run(`
         CREATE TABLE IF NOT EXISTS records (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -566,7 +566,7 @@ async function initSQLite() {
   }
 }
 
-// OS上で .grind ファイルがダブルクリックされた時の処理 (File Handling API)
+// OS上で .money または .grind ファイルがダブルクリックされた時の処理 (File Handling API)
 function handleLaunchFiles() {
   if ("launchQueue" in window) {
     window.launchQueue.setConsumer(async (launchParams) => {
@@ -2504,7 +2504,7 @@ async function saveGrindFile(isSaveAs = false) {
             types: [
               {
                 description: "GrindMoney Database",
-                accept: { "application/x-sqlite3": [".grind"] },
+                accept: { "application/x-sqlite3": [".money"] },
               },
             ],
           });
@@ -2519,7 +2519,7 @@ async function saveGrindFile(isSaveAs = false) {
         const a = document.createElement("a");
         a.href = url;
         a.download =
-          fileHandle && fileHandle.name ? fileHandle.name : "database.grind";
+          fileHandle && fileHandle.name ? fileHandle.name : "database.money";
         document.body.appendChild(a);
         a.click();
         document.body.removeChild(a);
@@ -2707,7 +2707,9 @@ async function loadGrindFile() {
         types: [
           {
             description: "GrindMoney Database",
-            accept: { "application/x-sqlite3": [".grind", ".sqlite"] },
+            accept: {
+              "application/x-sqlite3": [".money", ".grind", ".sqlite"],
+            },
           },
         ],
         multiple: false,
@@ -2720,7 +2722,7 @@ async function loadGrindFile() {
     // Safari / Firefox 等のフォールバック (input type="file" を使う)
     const input = document.createElement("input");
     input.type = "file";
-    input.accept = ".grind,.sqlite";
+    input.accept = ".money,.grind,.sqlite";
     input.onchange = async (e) => {
       const file = e.target.files[0];
       if (!file) return;
@@ -4399,7 +4401,11 @@ document.addEventListener("drop", async (e) => {
   closeAccountDictEditor();
 
   // 拡張子に応じて処理を分岐
-  if (file.name.endsWith(".grind") || file.name.endsWith(".sqlite")) {
+  if (
+    file.name.endsWith(".money") ||
+    file.name.endsWith(".grind") ||
+    file.name.endsWith(".sqlite")
+  ) {
     if (isDirty) {
       if (
         !confirm(
@@ -4431,7 +4437,7 @@ document.addEventListener("drop", async (e) => {
     }
   } else {
     alert(
-      "サポートされていないファイルです。.grind または .csv 形式のファイルをドロップしてください。",
+      "サポートされていないファイルです。.money、.grind または .csv 形式のファイルをドロップしてください。",
     );
   }
 });

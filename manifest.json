@@ -21,7 +21,7 @@
     {
       "action": "/index.html",
       "accept": {
-        "application/x-sqlite3": [".grind"]
+        "application/x-sqlite3": [".money", ".grind"]
       }
     }
   ]
