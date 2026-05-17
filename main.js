@@ -950,13 +950,42 @@ function updateRecord(id, field, newValue, element) {
     if (match) {
       let year = new Date().getFullYear();
       if (element && element.hasAttribute("data-year")) {
-        year = element.getAttribute("data-year");
+        year = parseInt(element.getAttribute("data-year"), 10);
       }
-      val = `${year}-${String(match[1]).padStart(2, "0")}-${String(match[2]).padStart(2, "0")} 00:00:00`;
+      const m = parseInt(match[1], 10);
+      const d = parseInt(match[2], 10);
+
+      const dateObj = new Date(year, m - 1, d);
+      if (
+        dateObj.getFullYear() !== year ||
+        dateObj.getMonth() !== m - 1 ||
+        dateObj.getDate() !== d
+      ) {
+        alert("存在しない日付です。カレンダーを確認してください。");
+        renderData();
+        return;
+      }
+      val = `${year}-${String(m).padStart(2, "0")}-${String(d).padStart(2, "0")} 00:00:00`;
     } else {
       let matchFull = val.match(/^(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})$/);
       if (matchFull) {
-        val = `${matchFull[1]}-${String(matchFull[2]).padStart(2, "0")}-${String(matchFull[3]).padStart(2, "0")} 00:00:00`;
+        const y = parseInt(matchFull[1], 10);
+        const m = parseInt(matchFull[2], 10);
+        const d = parseInt(matchFull[3], 10);
+
+        // 実在する日付かどうかの厳密チェック (例: 2月30日や13月を弾く)
+        const dateObj = new Date(y, m - 1, d);
+        if (
+          dateObj.getFullYear() !== y ||
+          dateObj.getMonth() !== m - 1 ||
+          dateObj.getDate() !== d
+        ) {
+          alert("存在しない日付です。カレンダーを確認してください。");
+          renderData();
+          return;
+        }
+
+        val = `${y}-${String(m).padStart(2, "0")}-${String(d).padStart(2, "0")} 00:00:00`;
       } else {
         alert("日付の形式が正しくありません。(例: 12/31 または 2025-12-31)");
         renderData();
@@ -987,7 +1016,7 @@ function updateRecord(id, field, newValue, element) {
         // 型の違い（"100"と100など）を許容するため == を使用
         // カンマが除去された表示を元に戻す
         if (element && field === "amount") {
-          element.innerText = val.toLocaleString("ja-JP");
+          element.innerText = val !== null ? val.toLocaleString("ja-JP") : "";
         }
         return; // 変更なし
       }
@@ -1042,6 +1071,29 @@ function updateRecord(id, field, newValue, element) {
     }
     updateTotalsOnly();
   } else if (field === "created_at") {
+    // ✅ フィルター期間外に変更された場合の神隠し（消失）を防ぐフェイルセーフ
+    const filterVal = document.getElementById("period-filter")?.value;
+    let isOutsideFilter = false;
+
+    if (window.currentActiveMonths) {
+      const match = window.currentActiveMonths.some((m) => val.startsWith(m));
+      if (!match) isOutsideFilter = true;
+    } else if (filterVal && filterVal !== "all") {
+      if (!val.startsWith(filterVal)) isOutsideFilter = true;
+    }
+
+    if (isOutsideFilter) {
+      window.currentActiveMonths = null;
+      setActiveQuickPeriodButton(null);
+      if (document.getElementById("period-filter")) {
+        document.getElementById("period-filter").value = "all";
+      }
+      showToast(
+        "日付がフィルター外に変更されたため、「すべての期間」を表示します",
+        '<span class="text-blue-400">👀</span>',
+      );
+    }
+
     renderData();
     // 再描画で失われたフォーカスを即座に復元
     if (focusSelector) {
@@ -1274,8 +1326,12 @@ function toggleAllBlocks(collapse) {
     collapsedBlocks.clear();
   }
 
-  // 画面を一括で再描画（ループで個別にアニメーションさせると重いため、即時反映させる）
-  renderData();
+  // ✅ View Transition API を使って、滑らかに一斉開閉させる
+  if (document.startViewTransition) {
+    document.startViewTransition(() => renderData());
+  } else {
+    renderData();
+  }
 }
 
 // --- 期間フィルターの選択肢を自動生成する ---
@@ -1585,27 +1641,29 @@ function renderData(focusBlockId = null) {
   const res = db.exec(
     "SELECT id, parent_id, memo, amount, created_at, account FROM records ORDER BY sort_order ASC, id ASC",
   );
-  if (res.length === 0) return;
 
-  const records = res[0].values.map(
-    ([id, parent_id, memo, rawAmount, created_at, account]) => {
-      // SQLiteの型汚染攻撃 (Type Juggling) を防ぐためのサニタイズ
-      let safeAmount = null;
-      if (rawAmount !== null && rawAmount !== "") {
-        const num = Number(rawAmount);
-        safeAmount = Number.isFinite(num) ? num : null;
-      }
-      return {
-        id,
-        parent_id,
-        memo,
-        amount: safeAmount,
-        created_at,
-        account,
-        children: [],
-      };
-    },
-  );
+  const records =
+    res.length > 0
+      ? res[0].values.map(
+          ([id, parent_id, memo, rawAmount, created_at, account]) => {
+            // SQLiteの型汚染攻撃 (Type Juggling) を防ぐためのサニタイズ
+            let safeAmount = null;
+            if (rawAmount !== null && rawAmount !== "") {
+              const num = Number(rawAmount);
+              safeAmount = Number.isFinite(num) ? num : null;
+            }
+            return {
+              id,
+              parent_id,
+              memo,
+              amount: safeAmount,
+              created_at,
+              account,
+              children: [],
+            };
+          },
+        )
+      : [];
 
   const recordMap = records.reduce((acc, record) => {
     acc[record.id] = record;
@@ -1729,13 +1787,87 @@ function renderData(focusBlockId = null) {
     }
 
     const isFilterActive = periodFilter !== "all" || window.currentActiveMonths;
-    container.innerHTML = `
-      <div id="empty-state" class="flex flex-col items-center justify-center py-20 text-slate-400">
-        <svg class="w-16 h-16 mb-4 opacity-20 animate-float"><use href="#icon-search"></use></svg>
-        <p class="text-lg font-medium">${isFilterActive ? "該当する記録が見つかりません" : "まだ記録がありません"}</p>
-        <p class="text-sm mt-1">${isFilterActive ? "フィルター条件を変更してみてください" : "上の入力欄から最初のブロックを作成しましょう"}</p>
-      </div>
-    `;
+    let emptyHtml = "";
+    if (isFilterActive) {
+      // フィルター適用時のEmpty State
+      emptyHtml = `
+        <div id="empty-state" class="flex flex-col items-center justify-center py-20 px-6 text-center border border-slate-200 dark:border-dark-border rounded-3xl bg-white dark:bg-dark-surface relative overflow-hidden transition-colors shadow-sm">
+           <!-- 背景の網目パターン -->
+           <div class="absolute inset-0 pointer-events-none opacity-[0.03] dark:opacity-[0.04]" style="background-image: repeating-linear-gradient(45deg, currentColor 0, currentColor 1px, transparent 1px, transparent 8px), repeating-linear-gradient(-45deg, currentColor 0, currentColor 1px, transparent 1px, transparent 8px);"></div>
+           <!-- グラデーション -->
+           <div class="absolute inset-0 pointer-events-none opacity-80 bg-gradient-to-b from-transparent to-white dark:to-[#0f172a]"></div>
+
+           <div class="relative z-10 flex flex-col items-center">
+              <div class="relative flex items-center justify-center mb-6">
+                <div class="absolute w-24 h-24 bg-slate-100 dark:bg-slate-800/50 rounded-full"></div>
+                <div class="relative w-16 h-16 bg-slate-200 dark:bg-slate-800 rounded-full flex items-center justify-center backdrop-blur-sm border border-slate-300 dark:border-slate-600">
+                  <svg class="w-8 h-8 text-slate-500 dark:text-slate-400"><use href="#icon-search"></use></svg>
+                </div>
+              </div>
+
+              <h2 class="text-2xl sm:text-3xl font-extrabold text-slate-900 dark:text-white mb-3 tracking-tight">該当する記録がありません</h2>
+              <p class="text-sm text-slate-500 dark:text-slate-400 max-w-sm mx-auto leading-relaxed mb-8">
+                指定された期間（フィルター）にはデータが存在しません。<br>フィルター条件を変更して再度お試しください。
+              </p>
+
+              <button onclick="setPeriodFilter('all', null)" class="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 px-6 py-2.5 rounded-full text-sm font-bold shadow-sm transition-all active:scale-95">
+                すべての期間を表示
+              </button>
+           </div>
+        </div>
+      `;
+    } else {
+      // 初期状態のウェルカム画面（GrindPeopleスタイル）
+
+      // ✅ File System Access APIの対応状況を自動判定
+      const isFsaSupported = "showSaveFilePicker" in window;
+      const browserNoticeHtml = isFsaSupported
+        ? `<div class="mt-8 flex flex-col items-center gap-1 text-[11px] text-slate-400 dark:text-slate-500">
+             <p class="font-bold flex items-center gap-1">
+               <svg class="w-3.5 h-3.5"><use href="#icon-sparkles"></use></svg> 推奨ブラウザ環境 (Chrome / Edge)
+             </p>
+             <p class="opacity-80">ファイルの直接上書き保存（File System API）が有効です</p>
+           </div>`
+        : `<div class="mt-8 flex flex-col items-center gap-1.5 text-[11px] text-orange-600 dark:text-orange-400 bg-orange-50 dark:bg-orange-900/20 px-4 py-2.5 rounded-xl border border-orange-200 dark:border-orange-800/50">
+             <p class="font-bold flex items-center gap-1 text-xs">
+               ⚠️ 推奨ブラウザ: Chrome または Edge
+             </p>
+             <p class="opacity-90 max-w-[260px] leading-relaxed">現在のブラウザは直接上書き保存に非対応のため、保存時に毎回ダウンロードが発生します。</p>
+           </div>`;
+
+      emptyHtml = `
+        <div id="empty-state" class="flex flex-col items-center justify-center py-20 px-6 text-center border border-slate-200 dark:border-dark-border rounded-3xl bg-white dark:bg-dark-surface relative overflow-hidden transition-colors shadow-sm">
+           <!-- 背景の網目パターン -->
+           <div class="absolute inset-0 pointer-events-none opacity-[0.03] dark:opacity-[0.04]" style="background-image: repeating-linear-gradient(45deg, currentColor 0, currentColor 1px, transparent 1px, transparent 8px), repeating-linear-gradient(-45deg, currentColor 0, currentColor 1px, transparent 1px, transparent 8px);"></div>
+           <!-- グラデーション -->
+           <div class="absolute inset-0 pointer-events-none opacity-80 bg-gradient-to-b from-transparent to-white dark:to-[#0f172a]"></div>
+
+           <div class="relative z-10 flex flex-col items-center">
+              <!-- アイコングループ -->
+              <div class="relative flex items-center justify-center mb-6">
+                <div class="absolute w-24 h-24 bg-blue-50 dark:bg-blue-900/20 rounded-full"></div>
+                <div class="relative w-16 h-16 bg-blue-100 dark:bg-blue-900/40 rounded-full flex items-center justify-center backdrop-blur-sm border border-blue-200 dark:border-blue-800/50 shadow-inner">
+                  <svg class="w-8 h-8 text-blue-600 dark:text-blue-400"><use href="#icon-money"></use></svg>
+                </div>
+              </div>
+
+              <h2 class="text-2xl sm:text-3xl font-extrabold text-slate-900 dark:text-white mb-3 tracking-tight">Welcome to GrindMoney</h2>
+              <p class="text-sm text-slate-500 dark:text-slate-400 max-w-md mx-auto leading-relaxed mb-8">
+                .money ファイルをドラッグ＆ドロップするか、<br>上の入力欄から最初のブロックを作成しましょう。
+              </p>
+
+              <button onclick="document.getElementById('new-block-memo').focus()" class="bg-slate-900 hover:bg-slate-800 dark:bg-white dark:hover:bg-slate-200 text-white dark:text-slate-900 px-6 py-3 rounded-full text-sm font-bold shadow-md transition-all active:scale-95 flex items-center gap-2">
+                <span class="text-lg font-light leading-none mb-0.5">+</span> 新しいブロックを作る
+              </button>
+
+              <!-- ブラウザ推奨の通知 -->
+              ${browserNoticeHtml}
+           </div>
+        </div>
+      `;
+    }
+
+    container.innerHTML = emptyHtml;
     existingBlockMap.forEach((el) => el.remove());
 
     let mobileTagContainer = document.getElementById("mobile-tag-container");
@@ -2114,7 +2246,7 @@ function updateOrCreateBlockElement(block, existingEl = null) {
 
         <div class="flex items-center gap-2 sm:gap-3 w-full sm:w-auto sm:flex-1 pl-6 sm:pl-0 mt-2 sm:mt-0">
           <input type="text" placeholder="明細を追加..." list="memo-suggestions" oninput="setDirty(true)" onblur="autoSuggestAccount(this)" onfocus="setTimeout(() => this.closest('form').scrollIntoView({ behavior: 'smooth', block: 'center' }), 300);" onkeydown="if(event.key==='Enter'){ if(event.isComposing){ event.preventDefault(); return; } event.preventDefault();this.closest('form').querySelector('.item-amount').focus();}" class="item-memo bg-transparent border-0 focus:ring-0 p-0 text-slate-900 dark:text-white placeholder-slate-400 flex-1 text-sm font-medium outline-none min-w-[100px]">
-          <input type="text" inputmode="decimal" placeholder="金額(数式OK)" class="item-amount bg-transparent border-0 focus:ring-0 p-0 text-right tabular-nums tracking-tight text-slate-900 dark:text-white placeholder-slate-400 w-24 sm:w-32 shrink-0 text-sm outline-none" style="min-width: 104px;" oninput="setDirty(true)" onfocus="setTimeout(() => this.closest('form').scrollIntoView({ behavior: 'smooth', block: 'center' }), 300);" onkeydown="if(event.key==='Enter' && event.isComposing){ event.preventDefault(); event.stopPropagation(); } else if(event.key==='Tab' && !event.shiftKey){ event.preventDefault(); this.closest('form').dispatchEvent(new Event('submit', {cancelable: true, bubbles: true})); }" title="数式計算（+ - * /）が使えます">
+          <input type="text" placeholder="金額(数式OK)" class="item-amount bg-transparent border-0 focus:ring-0 p-0 text-right tabular-nums tracking-tight text-slate-900 dark:text-white placeholder-slate-400 w-24 sm:w-32 shrink-0 text-sm outline-none" style="min-width: 104px;" oninput="setDirty(true)" onfocus="setTimeout(() => this.closest('form').scrollIntoView({ behavior: 'smooth', block: 'center' }), 300);" onkeydown="if(event.key==='Enter' && event.isComposing){ event.preventDefault(); event.stopPropagation(); } else if(event.key==='Tab' && !event.shiftKey){ event.preventDefault(); this.closest('form').dispatchEvent(new Event('submit', {cancelable: true, bubbles: true})); }" title="数式計算（+ - * /）が使えます">
         </div>
         <button type="submit" class="hidden">追加</button>
       </form>
@@ -3384,7 +3516,11 @@ function executeCSVImport() {
     window.currentActiveMonths = null;
     setActiveQuickPeriodButton(null);
 
-    alert(`${successCount} 件のデータをインポートしました。`);
+    // ✅ ブラウザの操作をブロックするアラートを廃止し、トースト通知に変更
+    showToast(
+      `${successCount} 件のデータをインポートしました`,
+      '<span class="text-green-400">✨</span>',
+    );
   } catch (err) {
     db.run("ROLLBACK;");
     alert("インポート中にエラーが発生しました。");
@@ -3399,12 +3535,15 @@ function executeCSVImport() {
 // 8. AI連携用のプロンプトコピー機能 (BYO-AIアプローチ)
 function copyAIPrompt() {
   const promptText = `あなたは優秀なデータ変換アシスタントです。
-私がこれから提示する『未知の会計ソフトのサンプルCSV』を解析し、GrindMoney（お金管理アプリ）で出力するための『マッピング設定（JSON形式）』を作成してください。
+私がこれから提示する『未知の会計ソフトのサンプルCSV』を解析し、GrindMoney（お金管理アプリ）に取り込むための『列の割り当て（マッピング）』を教えてください。
 
-GrindMoneyが持っているデータ仕様は以下の通りです：
-{ "memo": "摘要", "amount": "金額", "created_at": "作成日時" }
+GrindMoneyがインポートで必要とするデータは以下の4つです：
+・日付
+・勘定科目 (任意)
+・摘要 または メモ
+・金額
 
-それでは、以下の枠内にサンプルCSVを貼り付けるので、どの列にどのデータを割り当てるべきか、マッピング用のJSONだけを出力してください。
+以下の枠内にサンプルCSVを貼り付けるので、上記の4つがそれぞれ「左から何列目」にあるかを解析して教えてください。
 
 [ここにサンプルCSVを貼り付けてください]`;
 
@@ -3810,6 +3949,14 @@ document.addEventListener("keydown", (e) => {
     const input = document.getElementById("cmd-input");
 
     const filtered = getFilteredCommands(input.value);
+
+    // ✅ 結果が0件の時の NaN クラッシュを防止
+    if (
+      filtered.length === 0 &&
+      (e.key === "ArrowDown" || e.key === "ArrowUp" || e.key === "Enter")
+    ) {
+      return;
+    }
 
     if (e.key === "ArrowDown") {
       e.preventDefault();
