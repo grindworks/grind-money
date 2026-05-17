@@ -1,12 +1,12 @@
 // 💡 アップデート時はここを v2, v3... と書き換えることで更新が発火します
-const CACHE_NAME = "grindmoney-v41";
+const CACHE_NAME = "grindmoney-v42";
 const urlsToCache = [
-  "/",
-  "/index.html",
-  "/main.js",
-  "/styles.css",
-  "/icon-192.png",
-  "/icon-512.png",
+  "./",
+  "./index.html",
+  "./main.js",
+  "./styles.css",
+  "./icon-192.png",
+  "./icon-512.png",
 ];
 
 const externalUrlsToCache = [
