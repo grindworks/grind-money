@@ -1,5 +1,5 @@
 // 💡 アップデート時はここを v2, v3... と書き換えることで更新が発火します
-const CACHE_NAME = "grindmoney-v45";
+const CACHE_NAME = "grindmoney-v46";
 const urlsToCache = [
   "./",
   "./index.html",
@@ -21,7 +21,6 @@ self.addEventListener("install", (event) => {
 
   event.waitUntil(
     caches.open(CACHE_NAME).then(async (cache) => {
-      console.log("Opened cache");
       // ローカルファイルは通常通り一括追加
       await cache.addAll(urlsToCache);
       // 外部CDNファイルはCORS対応のため cors で個別に追加
@@ -33,14 +32,13 @@ self.addEventListener("install", (event) => {
           if (response.ok) {
             await cache.put(request, response);
           } else {
-            console.error(
-              "外部リソースの取得に失敗したためキャッシュをスキップしました:",
-              response.status,
-              url,
+            throw new Error(
+              `Critical asset fetch failed: ${response.status} for ${url}`,
             );
           }
         } catch (error) {
           console.error("外部リソースのキャッシュに失敗しました:", url, error);
+          throw error; // コアリソースの失敗はインストール全体を中断（失敗）させる
         }
       }
     }),
@@ -56,7 +54,6 @@ self.addEventListener("activate", (event) => {
         return Promise.all(
           cacheNames.map((cacheName) => {
             if (cacheName !== CACHE_NAME) {
-              console.log("古いキャッシュを削除しました:", cacheName);
               return caches.delete(cacheName);
             }
           }),

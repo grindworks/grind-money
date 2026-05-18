@@ -4,6 +4,7 @@ let fileHandle = null; // File System Access APIのファイルハンドル
 let isDirty = false; // 未保存の変更があるかどうか
 let pendingCSVData = []; // CSVパース結果の一時保存
 let lastUsedDates = {}; // ブロックごとの最終使用日付を記憶
+let lastUsedAccounts = {}; // ブロックごとの最終使用科目を記憶
 let pendingCSVBuffer = null; // CSVのバイナリデータ
 let currentDisplayedTotal = 0; // カウントアップ用
 let collapsedBlocks = new Set(); // 折りたたまれたブロックのIDを記憶
@@ -16,50 +17,6 @@ let lastSavedPassword = ""; // パスワードの変更・解除検知用
 const isMac = navigator.platform.toUpperCase().indexOf("MAC") >= 0;
 
 let customAccountDict = []; // カスタム科目辞書の配列
-
-// --- ダークモード管理 ---
-function initDarkMode() {
-  const saved = localStorage.getItem("theme");
-  if (
-    saved === "dark" ||
-    (!saved && window.matchMedia("(prefers-color-scheme: dark)").matches)
-  ) {
-    document.documentElement.classList.add("dark");
-  } else {
-    document.documentElement.classList.remove("dark");
-  }
-  updateMetaThemeColor(document.documentElement.classList.contains("dark"));
-}
-
-function toggleDarkMode() {
-  if (document.startViewTransition) {
-    document.startViewTransition(() => executeThemeToggle());
-  } else {
-    executeThemeToggle();
-  }
-}
-
-function executeThemeToggle() {
-  const isDark = document.documentElement.classList.toggle("dark");
-  localStorage.setItem("theme", isDark ? "dark" : "light");
-  updateMetaThemeColor(isDark);
-  // DBが初期化済みなら設定も保存
-  if (db) {
-    try {
-      setDbSetting("theme", isDark ? "dark" : "light");
-    } catch (e) {}
-  }
-}
-
-function updateMetaThemeColor(isDark) {
-  const metaTheme = document.getElementById("meta-theme-color");
-  if (metaTheme) {
-    metaTheme.setAttribute("content", isDark ? "#0f172a" : "#f8fafc");
-  }
-}
-
-// ページロード時にダークモードを即座に適用（FOUC防止）
-initDarkMode();
 
 // --- 設定保存用ユーティリティ (SQLiteベース) ---
 function getDbSetting(key, defaultValue = null) {
@@ -758,6 +715,7 @@ function addItem(parentId, memo, amount, dateStr, accountStr) {
   if (!safeMemo || amount === "" || amount === null) return;
   if (parentId) {
     if (dateStr) lastUsedDates[parentId] = dateStr;
+    if (accountStr) lastUsedAccounts[parentId] = accountStr;
   }
 
   if (dateStr) {
@@ -1122,6 +1080,15 @@ function updateRecord(id, field, newValue, element) {
   } else {
     // メモや科目の変更は、すでに画面上の文字（innerText / value）が書き換わっているため、
     // DBへの保存(UPDATE)と setDirty(true) だけで十分。DOMの再構築はスキップし、超速タイピングを邪魔しない。
+
+    // 親ブロックのタイトルが変更された場合、左側の目次(TOC)を即座に同期する
+    if (field === "memo" && element && element.tagName === "H2") {
+      const tocItem = document.querySelector(`.toc-item[href="#block-${id}"]`);
+      if (tocItem) {
+        tocItem.textContent = val || "名称未設定";
+        tocItem.title = val || "名称未設定";
+      }
+    }
   }
 }
 
@@ -1221,33 +1188,11 @@ function checkFutureDate(input) {
   const today = new Date();
   const todayStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
   if (input.value > todayStr) {
-    input.classList.add(
-      "text-red-600",
-      "font-bold",
-      "bg-red-50",
-      "rounded",
-      "dark:text-red-400",
-      "dark:bg-red-900/30",
-    );
-    input.classList.remove(
-      "text-slate-600",
-      "bg-transparent",
-      "dark:text-slate-300",
-    );
+    input.classList.add("text-red-600", "font-bold", "bg-red-50", "rounded");
+    input.classList.remove("text-slate-600", "bg-transparent");
   } else {
-    input.classList.add(
-      "text-slate-600",
-      "bg-transparent",
-      "dark:text-slate-300",
-    );
-    input.classList.remove(
-      "text-red-600",
-      "font-bold",
-      "bg-red-50",
-      "rounded",
-      "dark:text-red-400",
-      "dark:bg-red-900/30",
-    );
+    input.classList.add("text-slate-600", "bg-transparent");
+    input.classList.remove("text-red-600", "font-bold", "bg-red-50", "rounded");
   }
 }
 
@@ -1791,26 +1736,26 @@ function renderData(focusBlockId = null) {
     if (isFilterActive) {
       // フィルター適用時のEmpty State
       emptyHtml = `
-        <div id="empty-state" class="flex flex-col items-center justify-center py-20 px-6 text-center border border-slate-200 dark:border-dark-border rounded-3xl bg-white dark:bg-dark-surface relative overflow-hidden transition-colors shadow-sm">
+        <div id="empty-state" class="flex flex-col items-center justify-center py-20 px-6 text-center border border-slate-200 rounded-3xl bg-white relative overflow-hidden transition-colors shadow-sm">
            <!-- 背景の網目パターン -->
-           <div class="absolute inset-0 pointer-events-none opacity-[0.03] dark:opacity-[0.04]" style="background-image: repeating-linear-gradient(45deg, currentColor 0, currentColor 1px, transparent 1px, transparent 8px), repeating-linear-gradient(-45deg, currentColor 0, currentColor 1px, transparent 1px, transparent 8px);"></div>
+           <div class="absolute inset-0 pointer-events-none opacity-[0.03]" style="background-image: repeating-linear-gradient(45deg, currentColor 0, currentColor 1px, transparent 1px, transparent 8px), repeating-linear-gradient(-45deg, currentColor 0, currentColor 1px, transparent 1px, transparent 8px);"></div>
            <!-- グラデーション -->
-           <div class="absolute inset-0 pointer-events-none opacity-80 bg-gradient-to-b from-transparent to-white dark:to-[#0f172a]"></div>
+           <div class="absolute inset-0 pointer-events-none opacity-80 bg-gradient-to-b from-transparent to-white"></div>
 
            <div class="relative z-10 flex flex-col items-center">
               <div class="relative flex items-center justify-center mb-6">
-                <div class="absolute w-24 h-24 bg-slate-100 dark:bg-slate-800/50 rounded-full"></div>
-                <div class="relative w-16 h-16 bg-slate-200 dark:bg-slate-800 rounded-full flex items-center justify-center backdrop-blur-sm border border-slate-300 dark:border-slate-600">
-                  <svg class="w-8 h-8 text-slate-500 dark:text-slate-400"><use href="#icon-search"></use></svg>
+                <div class="absolute w-24 h-24 bg-slate-100 rounded-full"></div>
+                <div class="relative w-16 h-16 bg-slate-200 rounded-full flex items-center justify-center backdrop-blur-sm border border-slate-300">
+                  <svg class="w-8 h-8 text-slate-500"><use href="#icon-search"></use></svg>
                 </div>
               </div>
 
-              <h2 class="text-2xl sm:text-3xl font-extrabold text-slate-900 dark:text-white mb-3 tracking-tight">該当する記録がありません</h2>
-              <p class="text-sm text-slate-500 dark:text-slate-400 max-w-sm mx-auto leading-relaxed mb-8">
+              <h2 class="text-2xl sm:text-3xl font-extrabold text-slate-900 mb-3 tracking-tight">該当する記録がありません</h2>
+              <p class="text-sm text-slate-500 max-w-sm mx-auto leading-relaxed mb-8">
                 指定された期間（フィルター）にはデータが存在しません。<br>フィルター条件を変更して再度お試しください。
               </p>
 
-              <button onclick="setPeriodFilter('all', null)" class="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 px-6 py-2.5 rounded-full text-sm font-bold shadow-sm transition-all active:scale-95">
+              <button onclick="setPeriodFilter('all', null)" class="bg-white border border-slate-200 hover:bg-slate-50 text-slate-700 px-6 py-2.5 rounded-full text-sm font-bold shadow-sm transition-all active:scale-95">
                 すべての期間を表示
               </button>
            </div>
@@ -1822,13 +1767,13 @@ function renderData(focusBlockId = null) {
       // ✅ File System Access APIの対応状況を自動判定
       const isFsaSupported = "showSaveFilePicker" in window;
       const browserNoticeHtml = isFsaSupported
-        ? `<div class="mt-8 flex flex-col items-center gap-1 text-[11px] text-slate-400 dark:text-slate-500">
+        ? `<div class="mt-8 flex flex-col items-center gap-1 text-[11px] text-slate-400">
              <p class="font-bold flex items-center gap-1">
                <svg class="w-3.5 h-3.5"><use href="#icon-sparkles"></use></svg> 推奨ブラウザ環境 (Chrome / Edge)
              </p>
              <p class="opacity-80">ファイルの直接上書き保存（File System API）が有効です</p>
            </div>`
-        : `<div class="mt-8 flex flex-col items-center gap-1.5 text-[11px] text-orange-600 dark:text-orange-400 bg-orange-50 dark:bg-orange-900/20 px-4 py-2.5 rounded-xl border border-orange-200 dark:border-orange-800/50">
+        : `<div class="mt-8 flex flex-col items-center gap-1.5 text-[11px] text-orange-600 bg-orange-50 px-4 py-2.5 rounded-xl border border-orange-200">
              <p class="font-bold flex items-center gap-1 text-xs">
                ⚠️ 推奨ブラウザ: Chrome または Edge
              </p>
@@ -1836,27 +1781,27 @@ function renderData(focusBlockId = null) {
            </div>`;
 
       emptyHtml = `
-        <div id="empty-state" class="flex flex-col items-center justify-center py-20 px-6 text-center border border-slate-200 dark:border-dark-border rounded-3xl bg-white dark:bg-dark-surface relative overflow-hidden transition-colors shadow-sm">
+        <div id="empty-state" class="flex flex-col items-center justify-center py-20 px-6 text-center border border-slate-200 rounded-3xl bg-white relative overflow-hidden transition-colors shadow-sm">
            <!-- 背景の網目パターン -->
-           <div class="absolute inset-0 pointer-events-none opacity-[0.03] dark:opacity-[0.04]" style="background-image: repeating-linear-gradient(45deg, currentColor 0, currentColor 1px, transparent 1px, transparent 8px), repeating-linear-gradient(-45deg, currentColor 0, currentColor 1px, transparent 1px, transparent 8px);"></div>
+           <div class="absolute inset-0 pointer-events-none opacity-[0.03]" style="background-image: repeating-linear-gradient(45deg, currentColor 0, currentColor 1px, transparent 1px, transparent 8px), repeating-linear-gradient(-45deg, currentColor 0, currentColor 1px, transparent 1px, transparent 8px);"></div>
            <!-- グラデーション -->
-           <div class="absolute inset-0 pointer-events-none opacity-80 bg-gradient-to-b from-transparent to-white dark:to-[#0f172a]"></div>
+           <div class="absolute inset-0 pointer-events-none opacity-80 bg-gradient-to-b from-transparent to-white"></div>
 
            <div class="relative z-10 flex flex-col items-center">
               <!-- アイコングループ -->
               <div class="relative flex items-center justify-center mb-6">
-                <div class="absolute w-24 h-24 bg-blue-50 dark:bg-blue-900/20 rounded-full"></div>
-                <div class="relative w-16 h-16 bg-blue-100 dark:bg-blue-900/40 rounded-full flex items-center justify-center backdrop-blur-sm border border-blue-200 dark:border-blue-800/50 shadow-inner">
-                  <svg class="w-8 h-8 text-blue-600 dark:text-blue-400"><use href="#icon-money"></use></svg>
+                <div class="absolute w-24 h-24 bg-blue-50 rounded-full"></div>
+                <div class="relative w-16 h-16 bg-blue-100 rounded-full flex items-center justify-center backdrop-blur-sm border border-blue-200 shadow-inner">
+                  <svg class="w-8 h-8 text-blue-600"><use href="#icon-money"></use></svg>
                 </div>
               </div>
 
-              <h2 class="text-2xl sm:text-3xl font-extrabold text-slate-900 dark:text-white mb-3 tracking-tight">Welcome to GrindMoney</h2>
-              <p class="text-sm text-slate-500 dark:text-slate-400 max-w-md mx-auto leading-relaxed mb-8">
+              <h2 class="text-2xl sm:text-3xl font-extrabold text-slate-900 mb-3 tracking-tight">Welcome to GrindMoney</h2>
+              <p class="text-sm text-slate-500 max-w-md mx-auto leading-relaxed mb-8">
                 .money ファイルをドラッグ＆ドロップするか、<br>上の入力欄から最初のブロックを作成しましょう。
               </p>
 
-              <button onclick="document.getElementById('new-block-memo').focus()" class="bg-slate-900 hover:bg-slate-800 dark:bg-white dark:hover:bg-slate-200 text-white dark:text-slate-900 px-6 py-3 rounded-full text-sm font-bold shadow-md transition-all active:scale-95 flex items-center gap-2">
+              <button onclick="document.getElementById('new-block-memo').focus()" class="bg-slate-900 hover:bg-slate-800 text-white px-6 py-3 rounded-full text-sm font-bold shadow-md transition-all active:scale-95 flex items-center gap-2">
                 <span class="text-lg font-light leading-none mb-0.5">+</span> 新しいブロックを作る
               </button>
 
@@ -1944,10 +1889,10 @@ function renderData(focusBlockId = null) {
       .forEach(([tag, data]) => {
         const a = document.createElement("a");
         a.className =
-          "group block px-2 py-1.5 hover:bg-slate-100 dark:hover:bg-dark-surface-hover rounded transition-colors cursor-pointer flex justify-between items-center";
+          "group block px-2 py-1.5 hover:bg-slate-100 rounded transition-colors cursor-pointer flex justify-between items-center";
         a.innerHTML = `
-          <span class="text-sm font-medium text-slate-600 dark:text-slate-300 group-hover:text-primary transition-colors truncate">${escapeHtml(tag)}</span>
-          <span class="text-[10px] tabular-nums tracking-tight font-bold text-slate-400 bg-slate-100 dark:bg-dark-bg px-1.5 py-0.5 rounded group-hover:bg-white dark:group-hover:bg-dark-surface-hover transition-colors">¥${data.amount.toLocaleString("ja-JP")}</span>
+          <span class="text-sm font-medium text-slate-600 group-hover:text-primary transition-colors truncate">${escapeHtml(tag)}</span>
+          <span class="text-[10px] tabular-nums tracking-tight font-bold text-slate-400 bg-slate-100 px-1.5 py-0.5 rounded group-hover:bg-white transition-colors">¥${data.amount.toLocaleString("ja-JP")}</span>
         `;
         a.onclick = (e) => {
           e.preventDefault();
@@ -1966,7 +1911,7 @@ function renderData(focusBlockId = null) {
     mobileTagContainer = document.createElement("div");
     mobileTagContainer.id = "mobile-tag-container";
     mobileTagContainer.className =
-      "xl:hidden mt-12 mb-8 bg-white dark:bg-dark-surface p-6 rounded-xl border border-slate-200 dark:border-dark-border shadow-sm";
+      "xl:hidden mt-12 mb-8 bg-white p-6 rounded-xl border border-slate-200 shadow-sm";
     mobileTagContainer.innerHTML = `<h3 class="text-xs font-bold text-slate-400 mb-4 tracking-widest flex items-center gap-1"><svg class="w-4 h-4"><use href="#icon-folder"></use></svg> PROJECTS (TAGS)</h3>`;
 
     const grid = document.createElement("div");
@@ -1977,7 +1922,7 @@ function renderData(focusBlockId = null) {
       .forEach(([tag, data]) => {
         const btn = document.createElement("button");
         btn.className =
-          "text-left p-3 rounded-lg bg-slate-50 dark:bg-dark-bg hover:bg-slate-100 dark:hover:bg-dark-surface-hover border border-slate-100 dark:border-dark-border transition-colors cursor-pointer flex flex-col gap-1";
+          "text-left p-3 rounded-lg bg-slate-50 hover:bg-slate-100 border border-slate-100 transition-colors cursor-pointer flex flex-col gap-1";
         btn.innerHTML = `<span class="text-sm font-bold text-slate-700 truncate">${escapeHtml(tag)}</span><span class="text-xs tabular-nums tracking-tight text-slate-500">¥${data.amount.toLocaleString("ja-JP")}</span>`;
         btn.onclick = () => showTagModal(tag, data);
         grid.appendChild(btn);
@@ -2065,6 +2010,7 @@ function updateOrCreateBlockElement(block, existingEl = null) {
   const dd = String(today.getDate()).padStart(2, "0");
   const todayStr = `${yyyy}-${mm}-${dd}`;
   let defaultDate = lastUsedDates[block.id] || todayStr;
+  const defaultAccount = lastUsedAccounts[block.id] || "";
 
   // 年度を計算
   const startMonth = parseInt(getDbSetting("fiscalMonth", "4"), 10);
@@ -2117,9 +2063,9 @@ function updateOrCreateBlockElement(block, existingEl = null) {
 
         const diff = currentFiscalYear - itemFiscalYear;
         if (diff === 1) {
-          badgeHtml = `<span class="text-[9px] font-bold px-1.5 py-0.5 rounded bg-purple-100 text-purple-700 mr-1.5 shrink-0 select-none dark:bg-purple-900/30 dark:text-purple-300" title="前年度の記録です">前期</span>`;
+          badgeHtml = `<span class="text-[9px] font-bold px-1.5 py-0.5 rounded bg-purple-100 text-purple-700 mr-1.5 shrink-0 select-none" title="前年度の記録です">前期</span>`;
         } else if (diff >= 2) {
-          badgeHtml = `<span class="text-[9px] font-bold px-1.5 py-0.5 rounded bg-slate-200 text-slate-600 mr-1.5 shrink-0 select-none dark:bg-slate-700 dark:text-slate-300" title="前々期以前の記録です">過年度</span>`;
+          badgeHtml = `<span class="text-[9px] font-bold px-1.5 py-0.5 rounded bg-slate-200 text-slate-600 mr-1.5 shrink-0 select-none" title="前々期以前の記録です">過年度</span>`;
         }
 
         let dateClasses =
@@ -2127,14 +2073,14 @@ function updateOrCreateBlockElement(block, existingEl = null) {
         let dateTitle = "クリックして日付を編集";
         if (dStr > todayStr) {
           dateClasses +=
-            " text-red-600 bg-red-50 border-red-200 focus:ring-red-300 hover:bg-red-100 font-bold dark:text-red-400 dark:bg-red-900/30 dark:border-red-800 dark:hover:bg-red-900/50";
+            " text-red-600 bg-red-50 border-red-200 focus:ring-red-300 hover:bg-red-100 font-bold";
           dateTitle = "未来の日付です（クリックして編集）";
         } else {
           dateClasses +=
-            " text-slate-500 bg-slate-100 border-slate-200 focus:ring-blue-200 hover:bg-slate-200 dark:text-slate-400 dark:bg-dark-bg dark:border-dark-border dark:hover:bg-dark-surface-hover";
+            " text-slate-500 bg-slate-100 border-slate-200 focus:ring-blue-200 hover:bg-slate-200";
         }
 
-        dateDisp = `${badgeHtml}<span data-id="${item.id}" data-field="created_at" data-year="${yyyy}" contenteditable="true" oninput="setDirty(true)" onfocus="window.getSelection().selectAllChildren(this)" onpaste="handlePlainTextPaste(event)" onkeydown="if(event.key==='Enter' && !event.isComposing){event.preventDefault();this.blur();}" onblur="updateRecord(${item.id}, 'created_at', this.innerText, this)" class="${dateClasses}" title="${dateTitle}">${imm}/${idd}</span>`;
+        dateDisp = `${badgeHtml}<span data-id="${item.id}" data-field="created_at" data-year="${yyyy}" contenteditable="true" oninput="setDirty(true)" onpaste="handlePlainTextPaste(event)" onkeydown="if(event.key==='Enter' && !event.isComposing){event.preventDefault();this.blur();}" onblur="updateRecord(${item.id}, 'created_at', this.innerText, this)" class="${dateClasses}" title="${dateTitle}">${imm}/${idd}</span>`;
       }
     }
 
@@ -2142,19 +2088,19 @@ function updateOrCreateBlockElement(block, existingEl = null) {
     let accountDisp = `<input type="text" data-id="${item.id}" data-field="account" list="account-suggestions" value="${escapeHtml(accStr)}" placeholder="科目" onfocus="this.select()" oninput="setDirty(true)" onkeydown="if(event.key==='Enter' && !event.isComposing){event.preventDefault();this.blur();}" onblur="updateRecord(${item.id}, 'account', this.value, this)" class="text-xs text-blue-600 bg-blue-50 border border-blue-200 px-1.5 py-0.5 rounded mr-2 outline-none focus:ring-2 focus:ring-blue-400 focus:bg-blue-100 cursor-text transition-colors hover:bg-blue-100 w-[60px] sm:w-[72px] shrink-0 text-center placeholder-blue-300">`;
 
     itemsHtml += `
-      <div class="flex justify-between items-center px-4 sm:px-8 py-3.5 border-b border-slate-50 dark:border-dark-border/30 group/item hover:bg-slate-50/80 dark:hover:bg-dark-surface-hover transition-colors">
+      <div class="flex justify-between items-center px-4 sm:px-8 py-3.5 border-b border-slate-50 group/item hover:bg-slate-50/80 transition-colors">
         <div class="flex items-center flex-1 min-w-0">
           ${dateDisp}
           ${accountDisp}
-          <span data-id="${item.id}" data-field="memo" contenteditable="true" oninput="setDirty(true)" onpaste="handlePlainTextPaste(event)" onkeydown="if(event.key==='Enter' && !event.isComposing){event.preventDefault();this.blur();}" onblur="updateRecord(${item.id}, 'memo', this.innerText, this)" class="text-slate-700 dark:text-slate-200 font-medium truncate outline-none focus:bg-blue-50 dark:focus:bg-dark-surface-hover focus:ring-2 focus:ring-blue-200 px-1 rounded cursor-text transition-colors empty:inline-block empty:min-w-12 empty:bg-slate-100 dark:empty:bg-dark-bg empty:before:content-['✎_未入力'] empty:before:text-slate-400 empty:before:text-xs empty:before:font-normal empty:before:pointer-events-none empty:focus:before:opacity-50">${escapeHtml(item.memo)}</span>
+          <span data-id="${item.id}" data-field="memo" contenteditable="true" oninput="setDirty(true)" onpaste="handlePlainTextPaste(event)" onkeydown="if(event.key==='Enter' && !event.isComposing){event.preventDefault();this.blur();}" onblur="updateRecord(${item.id}, 'memo', this.innerText, this)" class="text-slate-700 font-medium truncate outline-none focus:bg-blue-50 focus:ring-2 focus:ring-blue-200 px-1 rounded cursor-text transition-colors empty:inline-block empty:min-w-12 empty:bg-slate-100 empty:before:content-['✎_未入力'] empty:before:text-slate-400 empty:before:text-xs empty:before:font-normal empty:before:pointer-events-none empty:focus:before:opacity-50">${escapeHtml(item.memo)}</span>
         </div>
         <div class="flex items-center space-x-2 sm:space-x-4 ml-2 sm:ml-auto shrink-0">
-          <span data-id="${item.id}" data-field="amount" contenteditable="true" oninput="setDirty(true)" onfocus="window.getSelection().selectAllChildren(this)" onpaste="handlePlainTextPaste(event)" onkeydown="if(event.key==='Enter' && !event.isComposing){event.preventDefault();this.blur();}" onblur="updateRecord(${item.id}, 'amount', this.innerText, this)" class="font-medium tabular-nums tracking-tight text-slate-900 dark:text-white outline-none focus:bg-blue-50 dark:focus:bg-dark-surface-hover focus:ring-2 focus:ring-blue-200 px-1 rounded cursor-text transition-colors empty:inline-block empty:min-w-8 empty:bg-slate-100 dark:empty:bg-dark-bg empty:before:content-['0'] empty:before:text-slate-400 empty:before:text-xs empty:before:font-sans empty:before:pointer-events-none empty:focus:before:opacity-50">${item.amount !== null && item.amount !== "" && item.amount !== undefined ? item.amount.toLocaleString("ja-JP") : ""}</span><span class="text-slate-400 text-xs font-sans">円</span>
+          <span data-id="${item.id}" data-field="amount" contenteditable="true" inputmode="decimal" oninput="setDirty(true)" onfocus="window.getSelection().selectAllChildren(this)" onpaste="handlePlainTextPaste(event)" onkeydown="if(event.key==='Enter' && !event.isComposing){event.preventDefault();this.blur();}" onblur="updateRecord(${item.id}, 'amount', this.innerText, this)" class="font-medium tabular-nums tracking-tight text-slate-900 outline-none focus:bg-blue-50 focus:ring-2 focus:ring-blue-200 px-1 rounded cursor-text transition-colors empty:inline-block empty:min-w-8 empty:bg-slate-100 empty:before:content-['0'] empty:before:text-slate-400 empty:before:text-xs empty:before:font-sans empty:before:pointer-events-none empty:focus:before:opacity-50">${item.amount !== null && item.amount !== "" && item.amount !== undefined ? item.amount.toLocaleString("ja-JP") : ""}</span><span class="text-slate-400 text-xs font-sans">円</span>
           <div class="flex items-center space-x-1 md:opacity-0 md:group-hover/item:opacity-100 focus-within:opacity-100 transition-opacity">
-            <button onclick="duplicateRecord(${item.id})" aria-label="複製" class="text-slate-300 hover:text-primary focus:outline-none focus:ring-2 focus:ring-primary/30 rounded p-1 transition-colors" title="複製">
-              <svg class="w-4 h-4"><use href="#icon-copy"></use></svg>
+            <button onclick="duplicateRecord(${item.id})" aria-label="複製" class="text-slate-300 hover:text-primary focus:outline-none focus:ring-2 focus:ring-primary/30 rounded p-2 -m-1 transition-colors cursor-pointer" title="複製">
+              <svg class="w-4 h-4 pointer-events-none"><use href="#icon-copy"></use></svg>
             </button>
-            <button onclick="deleteRecord(${item.id})" aria-label="削除" class="text-slate-300 hover:text-red-500 focus:outline-none focus:ring-2 focus:ring-red-200 rounded transition-colors text-xl leading-none px-1 py-0.5 -mt-0.5" title="削除">&times;</button>
+            <button onclick="deleteRecord(${item.id})" aria-label="削除" class="text-slate-300 hover:text-red-500 focus:outline-none focus:ring-2 focus:ring-red-200 rounded transition-colors text-2xl leading-none p-2 -m-1 cursor-pointer" title="削除">&times;</button>
           </div>
         </div>
       </div>
@@ -2183,9 +2129,9 @@ function updateOrCreateBlockElement(block, existingEl = null) {
     if (validDiffs.length > 0) {
       const minDiff = Math.min(...validDiffs);
       if (minDiff === 1) {
-        blockBadgeHtml = `<span class="text-[10px] font-bold px-1.5 py-0.5 rounded bg-purple-100 text-purple-700 ml-2 shrink-0 select-none dark:bg-purple-900/30 dark:text-purple-300" title="このブロックは前年度のデータです">前期</span>`;
+        blockBadgeHtml = `<span class="text-[10px] font-bold px-1.5 py-0.5 rounded bg-purple-100 text-purple-700 ml-2 shrink-0 select-none" title="このブロックは前年度のデータです">前期</span>`;
       } else if (minDiff >= 2) {
-        blockBadgeHtml = `<span class="text-[10px] font-bold px-1.5 py-0.5 rounded bg-slate-200 text-slate-600 ml-2 shrink-0 select-none dark:bg-slate-700 dark:text-slate-300" title="このブロックは前々期以前のデータです">過年度</span>`;
+        blockBadgeHtml = `<span class="text-[10px] font-bold px-1.5 py-0.5 rounded bg-slate-200 text-slate-600 ml-2 shrink-0 select-none" title="このブロックは前々期以前のデータです">過年度</span>`;
       }
     }
   }
@@ -2193,30 +2139,29 @@ function updateOrCreateBlockElement(block, existingEl = null) {
   let dateInputClass =
     "item-date border-0 focus:ring-0 p-0 text-xs w-[110px] text-center outline-none cursor-pointer transition-colors";
   if (defaultDate > todayStr) {
-    dateInputClass +=
-      " text-red-600 font-bold bg-red-50 rounded dark:text-red-400 dark:bg-red-900/30";
+    dateInputClass += " text-red-600 font-bold bg-red-50 rounded";
   } else {
-    dateInputClass += " text-slate-600 bg-transparent dark:text-slate-300";
+    dateInputClass += " text-slate-600 bg-transparent";
   }
 
   blockEl.innerHTML = `
-    <button onclick="event.stopPropagation(); saveTemplate(${block.id})" class="absolute -top-3 -left-3 opacity-100 md:opacity-0 group-hover/block:opacity-100 bg-white dark:bg-dark-surface border border-slate-200 dark:border-dark-border text-slate-400 hover:text-primary hover:border-primary/50 hover:shadow-[0_0_15px_rgba(15,98,254,0.3)] hover:scale-110 p-2 rounded-xl transition-all duration-300 cursor-pointer flex items-center justify-center z-10" title="このブロックをテンプレートとして保存">
+    <button onclick="event.stopPropagation(); saveTemplate(${block.id})" class="absolute -top-3 -left-3 opacity-100 md:opacity-0 group-hover/block:opacity-100 bg-white border border-slate-200 text-slate-400 hover:text-primary hover:border-primary/50 hover:shadow-[0_0_15px_rgba(15,98,254,0.3)] hover:scale-110 p-2 rounded-xl transition-all duration-300 cursor-pointer flex items-center justify-center z-10" title="このブロックをテンプレートとして保存">
       <svg class="w-5 h-5"><use href="#icon-squares-plus"></use></svg>
     </button>
-    <div class="bg-white dark:bg-dark-surface rounded-xl shadow-sm border border-slate-200 dark:border-dark-border overflow-hidden transition-all hover:border-slate-300 dark:hover:border-dark-border-hover hover:shadow-md">
-    <div onclick="toggleBlock(${block.id})" class="bg-slate-50/50 dark:bg-dark-surface px-8 py-5 border-b border-slate-100 dark:border-dark-border flex justify-between items-center transition-colors cursor-pointer select-none group/header hover:bg-slate-100 dark:hover:bg-dark-surface-hover">
+    <div class="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden transition-all hover:border-slate-300 hover:shadow-md">
+    <div onclick="toggleBlock(${block.id})" class="bg-slate-50/50 px-8 py-5 border-b border-slate-100 flex justify-between items-center transition-colors cursor-pointer select-none group/header hover:bg-slate-100">
       <div class="flex items-center gap-3 overflow-hidden">
         <svg id="block-icon-${block.id}" class="w-5 h-5 text-slate-400 transition-transform duration-200" style="transform: ${iconRotation};"><use href="#icon-chevron-down"></use></svg>
-        <h2 data-id="${block.id}" data-field="memo" contenteditable="true" oninput="setDirty(true)" onpaste="handlePlainTextPaste(event)" onclick="event.stopPropagation()" onkeydown="if(event.key==='Enter' && !event.isComposing){event.preventDefault();this.blur();}" onblur="updateRecord(${block.id}, 'memo', this.innerText, this)" class="text-xl font-extrabold text-slate-900 dark:text-white tracking-tight outline-none focus:bg-white dark:focus:bg-dark-surface-hover focus:ring-2 focus:ring-primary/30 px-1 rounded cursor-text truncate transition-colors empty:inline-block empty:min-w-20 empty:bg-slate-100 dark:empty:bg-dark-bg empty:before:content-['✎_タイトル未入力'] empty:before:text-slate-400 empty:before:text-sm empty:before:font-normal empty:before:pointer-events-none empty:focus:before:opacity-50">${escapeHtml(block.memo)}</h2>
+        <h2 data-id="${block.id}" data-field="memo" contenteditable="true" oninput="setDirty(true)" onpaste="handlePlainTextPaste(event)" onclick="event.stopPropagation()" onkeydown="if(event.key==='Enter' && !event.isComposing){event.preventDefault();this.blur();}" onblur="updateRecord(${block.id}, 'memo', this.innerText, this)" class="text-xl font-extrabold text-slate-900 tracking-tight outline-none focus:bg-white focus:ring-2 focus:ring-primary/30 px-1 rounded cursor-text truncate transition-colors empty:inline-block empty:min-w-20 empty:bg-slate-100 empty:before:content-['✎_タイトル未入力'] empty:before:text-slate-400 empty:before:text-sm empty:before:font-normal empty:before:pointer-events-none empty:focus:before:opacity-50">${escapeHtml(block.memo)}</h2>
         ${blockBadgeHtml}
       </div>
       <div class="flex items-center shrink-0">
-        <div class="font-bold tabular-nums tracking-tight text-slate-900 dark:text-white text-lg"><span id="block-total-${block.id}">${blockTotal.toLocaleString("ja-JP")}</span> <span class="text-slate-400 text-sm font-sans">円</span></div>
-        <div class="flex items-center pl-4 border-l border-slate-200/50 dark:border-dark-border/50 ml-4 shrink-0 h-8">
-          <button onclick="event.stopPropagation(); sortBlockByDate(${block.id})" aria-label="日付順に並べ替え" class="w-8 h-8 flex items-center justify-center rounded text-slate-300 dark:text-slate-500 hover:bg-slate-100 dark:hover:bg-dark-surface-hover hover:text-slate-600 dark:hover:text-slate-300 md:opacity-0 md:group-hover/block:opacity-100 focus:opacity-100 focus:outline-none focus:ring-2 focus:ring-slate-200 transition-all cursor-pointer mr-1" title="日付の古い順に並べ替える">
+        <div class="font-bold tabular-nums tracking-tight text-slate-900 text-lg"><span id="block-total-${block.id}">${blockTotal.toLocaleString("ja-JP")}</span> <span class="text-slate-400 text-sm font-sans">円</span></div>
+        <div class="flex items-center pl-4 border-l border-slate-200/50 ml-4 shrink-0 h-8">
+          <button onclick="event.stopPropagation(); sortBlockByDate(${block.id})" aria-label="日付順に並べ替え" class="w-8 h-8 flex items-center justify-center rounded text-slate-300 hover:bg-slate-100 hover:text-slate-600 md:opacity-0 md:group-hover/block:opacity-100 focus:opacity-100 focus:outline-none focus:ring-2 focus:ring-slate-200 transition-all cursor-pointer mr-1 ${block.children.length < 2 ? "opacity-30 pointer-events-none md:!opacity-30" : ""}" title="日付の古い順に並べ替える">
             <svg class="w-5 h-5"><use href="#icon-sort"></use></svg>
           </button>
-          <button onclick="event.stopPropagation(); deleteRecord(${block.id})" aria-label="ブロックを削除" class="w-8 h-8 flex items-center justify-center rounded text-slate-300 dark:text-slate-500 hover:bg-red-50 dark:hover:bg-red-500/10 hover:text-red-500 md:opacity-0 md:group-hover/block:opacity-100 focus:opacity-100 focus:outline-none focus:ring-2 focus:ring-red-200 transition-all cursor-pointer" title="ブロックを丸ごと削除">
+          <button onclick="event.stopPropagation(); deleteRecord(${block.id})" aria-label="ブロックを削除" class="w-8 h-8 flex items-center justify-center rounded text-slate-300 hover:bg-red-50 hover:text-red-500 md:opacity-0 md:group-hover/block:opacity-100 focus:opacity-100 focus:outline-none focus:ring-2 focus:ring-red-200 transition-all cursor-pointer" title="ブロックを丸ごと削除">
             <svg class="w-5 h-5"><use href="#icon-trash"></use></svg>
           </button>
         </div>
@@ -2224,8 +2169,8 @@ function updateOrCreateBlockElement(block, existingEl = null) {
     </div>
     <div id="block-body-${block.id}" class="transition-all duration-300 ease-in-out overflow-hidden" style="max-height: ${maxH}; opacity: ${op};">
       <div class="">${itemsHtml}</div>
-      <div class="px-8 py-4 bg-white dark:bg-dark-surface transition-colors">
-      <form id="block-form-${block.id}" class="flex flex-wrap sm:flex-nowrap items-center gap-2 sm:gap-3 px-3 py-2 -mx-3 rounded-md transition-all focus-within:bg-slate-50 dark:focus-within:bg-dark-surface-hover focus-within:ring-1 focus-within:ring-slate-200 dark:focus-within:ring-dark-border" onsubmit="event.preventDefault(); addItem(
+      <div class="px-8 py-4 bg-white transition-colors">
+      <form id="block-form-${block.id}" class="flex flex-wrap sm:flex-nowrap items-center gap-2 sm:gap-3 px-3 py-2 -mx-3 rounded-md transition-all focus-within:bg-slate-50 focus-within:ring-1 focus-within:ring-slate-200" onsubmit="event.preventDefault(); addItem(
         ${block.id},
         this.querySelector('.item-memo').value,
         this.querySelector('.item-amount').value,
@@ -2236,17 +2181,17 @@ function updateOrCreateBlockElement(block, existingEl = null) {
 
         <div class="flex items-center gap-2 sm:gap-3 w-full sm:w-auto">
           <button type="submit" aria-label="明細を追加" class="text-primary bg-primary/10 hover:bg-primary/20 rounded-full w-8 h-8 flex items-center justify-center text-xl leading-none font-light sm:hidden transition-colors outline-none focus:ring-2 focus:ring-primary/50 shrink-0">+</button>
-          <div class="flex items-center bg-slate-50 dark:bg-dark-bg rounded-md px-1 py-1 border border-slate-200 dark:border-dark-border transition-colors">
+          <div class="flex items-center bg-slate-50 rounded-md px-1 py-1 border border-slate-200 transition-colors">
             <button type="button" onclick="adjustDate(this, -1)" aria-label="1日戻す" class="text-slate-400 hover:text-slate-800 w-8 h-8 flex items-center justify-center font-bold cursor-pointer outline-none transition-colors touch-manipulation" title="-1日">-</button>
             <input type="date" class="${dateInputClass}" value="${defaultDate}" oninput="setDirty(true); checkFutureDate(this)">
             <button type="button" onclick="adjustDate(this, 1)" aria-label="1日進める" class="text-slate-400 hover:text-slate-800 w-8 h-8 flex items-center justify-center font-bold cursor-pointer outline-none transition-colors touch-manipulation" title="+1日">+</button>
           </div>
-          <input type="text" placeholder="科目" value="" list="account-suggestions" oninput="setDirty(true)" onfocus="this.select()" onkeydown="if(event.key==='Enter'){ if(event.isComposing){ event.preventDefault(); return; } event.preventDefault();this.closest('form').querySelector('.item-memo').focus();}" class="item-account bg-transparent border-0 focus:ring-0 p-0 text-slate-600 dark:text-slate-300 placeholder-slate-400 w-20 shrink-0 text-sm outline-none text-center" style="min-width: 60px;">
+          <input type="text" placeholder="科目" value="${escapeHtml(defaultAccount)}" list="account-suggestions" oninput="setDirty(true)" onfocus="this.select()" onkeydown="if(event.key==='Enter'){ if(event.isComposing){ event.preventDefault(); return; } event.preventDefault();this.closest('form').querySelector('.item-memo').focus();}" class="item-account bg-transparent border-0 focus:ring-0 p-0 text-slate-600 placeholder-slate-400 w-20 shrink-0 text-sm outline-none text-center" style="min-width: 60px;">
         </div>
 
         <div class="flex items-center gap-2 sm:gap-3 w-full sm:w-auto sm:flex-1 pl-6 sm:pl-0 mt-2 sm:mt-0">
-          <input type="text" placeholder="明細を追加..." list="memo-suggestions" oninput="setDirty(true)" onblur="autoSuggestAccount(this)" onfocus="setTimeout(() => this.closest('form').scrollIntoView({ behavior: 'smooth', block: 'center' }), 300);" onkeydown="if(event.key==='Enter'){ if(event.isComposing){ event.preventDefault(); return; } event.preventDefault();this.closest('form').querySelector('.item-amount').focus();}" class="item-memo bg-transparent border-0 focus:ring-0 p-0 text-slate-900 dark:text-white placeholder-slate-400 flex-1 text-sm font-medium outline-none min-w-[100px]">
-          <input type="text" placeholder="金額(数式OK)" class="item-amount bg-transparent border-0 focus:ring-0 p-0 text-right tabular-nums tracking-tight text-slate-900 dark:text-white placeholder-slate-400 w-24 sm:w-32 shrink-0 text-sm outline-none" style="min-width: 104px;" oninput="setDirty(true)" onfocus="setTimeout(() => this.closest('form').scrollIntoView({ behavior: 'smooth', block: 'center' }), 300);" onkeydown="if(event.key==='Enter' && event.isComposing){ event.preventDefault(); event.stopPropagation(); } else if(event.key==='Tab' && !event.shiftKey){ event.preventDefault(); this.closest('form').dispatchEvent(new Event('submit', {cancelable: true, bubbles: true})); }" title="数式計算（+ - * /）が使えます">
+          <input type="text" placeholder="明細を追加..." list="memo-suggestions" oninput="setDirty(true)" onblur="autoSuggestAccount(this)" onfocus="if(window.innerWidth < 640) { setTimeout(() => this.closest('form').scrollIntoView({ behavior: 'smooth', block: 'center' }), 300); }" onkeydown="if(event.key==='Enter'){ if(event.isComposing){ event.preventDefault(); return; } event.preventDefault();this.closest('form').querySelector('.item-amount').focus();}" class="item-memo bg-transparent border-0 focus:ring-0 p-0 text-slate-900 placeholder-slate-400 flex-1 text-sm font-medium outline-none min-w-[100px]">
+          <input type="text" inputmode="decimal" placeholder="金額(数式OK)" class="item-amount bg-transparent border-0 focus:ring-0 p-0 text-right tabular-nums tracking-tight text-slate-900 placeholder-slate-400 w-24 sm:w-32 shrink-0 text-sm outline-none" style="min-width: 104px;" oninput="setDirty(true)" onfocus="if(window.innerWidth < 640) { setTimeout(() => this.closest('form').scrollIntoView({ behavior: 'smooth', block: 'center' }), 300); }" onkeydown="if(event.key==='Enter' && event.isComposing){ event.preventDefault(); event.stopPropagation(); } else if(event.key==='Tab' && !event.shiftKey){ event.preventDefault(); this.closest('form').requestSubmit(); }" title="数式計算（+ - * /）が使えます">
         </div>
         <button type="submit" class="hidden">追加</button>
       </form>
@@ -2495,7 +2440,7 @@ function duplicateRecord(id) {
       const newId = res[0].values[0][0];
 
       setDirty(true);
-      renderData(parent_id);
+      renderData();
 
       showToast("明細を複製しました", '<span class="text-green-400">📋</span>');
 
@@ -2641,7 +2586,6 @@ async function saveGrindFile(isSaveAs = false) {
             ],
           });
         } catch (err) {
-          console.log("Save cancelled.", err);
           return;
         }
       } else {
@@ -2817,7 +2761,6 @@ async function processFileHandle(handle, isDummy = false) {
       renderData();
     }
   } catch (err) {
-    console.log("Open cancelled or failed.", err);
     alert("ファイルの読み込みに失敗しました。");
   }
 }
@@ -2847,9 +2790,7 @@ async function loadGrindFile() {
         multiple: false,
       });
       await processFileHandle(handle);
-    } catch (err) {
-      console.log("Open picker cancelled.", err);
-    }
+    } catch (err) {}
   } else {
     // Safari / Firefox 等のフォールバック (input type="file" を使う)
     const input = document.createElement("input");
@@ -2932,7 +2873,14 @@ function exportCSV(format = "yayoi") {
     params.push(`${filterVal.replace(/[^0-9-]/g, "")}%`);
   }
 
-  let query = `SELECT c.id, COALESCE(p.memo, '') || ' - ' || COALESCE(c.memo, '') AS memo, c.amount, c.created_at, c.account FROM records c JOIN records p ON c.parent_id = p.id WHERE c.parent_id IS NOT NULL${whereClause} ORDER BY c.id ASC`;
+  let query = `SELECT c.id,
+    CASE
+      WHEN c.memo IS NOT NULL AND c.memo != '' THEN COALESCE(p.memo, '') || ' - ' || c.memo
+      ELSE COALESCE(p.memo, '')
+    END AS memo,
+    c.amount, c.created_at, c.account
+    FROM records c JOIN records p ON c.parent_id = p.id
+    WHERE c.parent_id IS NOT NULL${whereClause} ORDER BY c.id ASC`;
 
   const values = [];
   let exportStmt;
@@ -3355,6 +3303,18 @@ function executeCSVImport() {
     return;
   }
 
+  // 同じ列が重複して割り当てられていないかチェック
+  const selectedCols = [mapDate, mapAccount, mapMemo, mapAmount].filter(
+    (val) => val !== -1,
+  );
+  const uniqueCols = new Set(selectedCols);
+  if (selectedCols.length !== uniqueCols.size) {
+    alert(
+      "同じ列が複数の項目に割り当てられています。\nマッピング（列の選択）を見直してください。",
+    );
+    return;
+  }
+
   // モーダルを閉じると pendingCSVData がクリアされてしまうため、退避しておく
   const dataToImport = [...pendingCSVData];
 
@@ -3604,7 +3564,6 @@ window.addEventListener("beforeinstallprompt", (e) => {
       if (!deferredPrompt) return;
       deferredPrompt.prompt();
       const { outcome } = await deferredPrompt.userChoice;
-      console.log(`インストール結果: ${outcome}`);
       deferredPrompt = null;
     };
   }
@@ -3613,7 +3572,6 @@ window.addEventListener("beforeinstallprompt", (e) => {
 window.addEventListener("appinstalled", () => {
   const installBtn = document.getElementById("install-button");
   if (installBtn) installBtn.classList.add("hidden");
-  console.log("GrindMoneyがインストールされました");
 });
 
 // --- コマンドパレット制御 ---
@@ -3846,7 +3804,7 @@ function renderCommandList(query = "") {
   filtered.forEach((cmd, i) => {
     const div = document.createElement("div");
     const isSelected = i === selectedCommandIndex;
-    div.className = `px-4 py-3 my-1 flex justify-between items-center rounded-md cursor-pointer transition-colors ${isSelected ? "bg-primary-50 dark:bg-primary/10 text-primary" : "text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-dark-surface-hover hover:text-slate-900 dark:hover:text-white"}`;
+    div.className = `px-4 py-3 my-1 flex justify-between items-center rounded-md cursor-pointer transition-colors ${isSelected ? "bg-primary-50 text-primary" : "text-slate-600 hover:bg-slate-100 hover:text-slate-900"}`;
 
     let innerHtml = `<div class="flex items-center gap-3"><span class="text-xl">${cmd.icon}</span><span class="font-medium tracking-wide">${cmd.title}</span></div>`;
     if (cmd.shortcut) {
@@ -4433,18 +4391,6 @@ function loadSettingsFromDb() {
   if (dictSelect) dictSelect.value = savedDict;
   renderAccountSuggestions(savedDict);
   updateFiscalYearButton();
-
-  // 💡 ダークモード状態の復元
-  const dbTheme = getDbSetting("theme");
-  if (dbTheme) {
-    if (dbTheme === "dark") {
-      document.documentElement.classList.add("dark");
-      localStorage.setItem("theme", "dark");
-    } else {
-      document.documentElement.classList.remove("dark");
-      localStorage.setItem("theme", "light");
-    }
-  }
 }
 
 // ページ離脱時の警告（データ未保存防止）
@@ -4546,6 +4492,13 @@ document.addEventListener("drop", async (e) => {
   closeExportModal();
   closeTagModal();
   closeAccountDictEditor();
+
+  // 万が一パスワードプロンプトが開いていたら強制的に隠す
+  const pwModal = document.getElementById("password-prompt-modal");
+  if (pwModal && !pwModal.classList.contains("hidden")) {
+    pwModal.classList.add("hidden");
+    pwModal.classList.remove("flex");
+  }
 
   // 拡張子に応じて処理を分岐
   if (

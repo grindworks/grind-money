@@ -1,22 +1,12 @@
 @import "tailwindcss";
 
-/* ダークモードのクラスベース切り替えを有効化 */
-@custom-variant dark (&:where(.dark, .dark *));
+@custom-variant dark (&:where(.never-used));
 
 @theme {
   --color-primary: #0f62fe;
   --color-primary-hover: #0353e9;
   --color-primary-50: #eff4ff;
   --font-sans: "Inter", "Noto Sans JP", "Helvetica Neue", Arial, sans-serif;
-
-  /* ダークモード用サーフェスカラー */
-  --color-dark-bg: #0b0f1a;
-  --color-dark-surface: #131825;
-  --color-dark-surface-hover: #1a2035;
-  --color-dark-border: #1e2a3a;
-  --color-dark-border-hover: #2a3a50;
-  --color-dark-text: #e2e8f0;
-  --color-dark-text-secondary: #94a3b8;
 
   /* アニメーション定義 */
   --animate-modal-in: modalIn 0.25s cubic-bezier(0.16, 1, 0.3, 1) forwards;
@@ -52,8 +42,12 @@
 
 /* モーダル背景のフェードイン */
 @keyframes modalOverlay {
-  0% { opacity: 0; }
-  100% { opacity: 1; }
+  0% {
+    opacity: 0;
+  }
+  100% {
+    opacity: 1;
+  }
 }
 
 /* トースト通知のスライドイン */
@@ -94,7 +88,8 @@
 
 /* グロウパルスエフェクト */
 @keyframes glowPulse {
-  0%, 100% {
+  0%,
+  100% {
     box-shadow: 0 0 0 0 rgba(15, 98, 254, 0);
   }
   50% {
@@ -104,8 +99,12 @@
 
 /* フェードインアニメーション */
 @keyframes fadeIn {
-  0% { opacity: 0; }
-  100% { opacity: 1; }
+  0% {
+    opacity: 0;
+  }
+  100% {
+    opacity: 1;
+  }
 }
 
 /* スライドアップアニメーション */
@@ -122,14 +121,23 @@
 
 /* フローティングアニメーション (空状態のアイコン用) */
 @keyframes float {
-  0%, 100% { transform: translateY(0); }
-  50% { transform: translateY(-10px); }
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-10px);
+  }
 }
 
 /* 成功フラッシュ (入力完了時) */
 @keyframes successFlash {
-  0% { background-color: rgba(16, 185, 129, 0.15); }
-  100% { background-color: transparent; }
+  0% {
+    background-color: rgba(16, 185, 129, 0.15);
+  }
+  100% {
+    background-color: transparent;
+  }
 }
 
 /* リップルエフェクト */
@@ -146,8 +154,12 @@
 
 /* トーストのプログレスバー */
 @keyframes toastProgress {
-  0% { width: 100%; }
-  100% { width: 0%; }
+  0% {
+    width: 100%;
+  }
+  100% {
+    width: 0%;
+  }
 }
 
 /* --- ユーティリティレイヤー拡張 --- */
@@ -194,45 +206,11 @@
   animation: var(--animate-glow-pulse);
 }
 
-/* ダークモードのスムーズトランジション */
 @layer base {
-  html {
-    transition: background-color 0.3s ease, color 0.3s ease;
-  }
-
-  /* ダークモードのグローバルスタイル */
-  html.dark {
-    color-scheme: dark;
-  }
-
   /* フォーカスリングの統一スタイル */
   :focus-visible {
     outline: 2px solid var(--color-primary);
     outline-offset: 2px;
     border-radius: 4px;
-  }
-
-  /* ダークモードのスクロールバー */
-  html.dark ::-webkit-scrollbar {
-    width: 6px;
-    height: 6px;
-  }
-  html.dark ::-webkit-scrollbar-track {
-    background: var(--color-dark-bg);
-  }
-  html.dark ::-webkit-scrollbar-thumb {
-    background: var(--color-dark-border);
-    border-radius: 3px;
-  }
-
-  /* セレクトボックスのダークモード */
-  html.dark select option {
-    background-color: var(--color-dark-surface);
-    color: var(--color-dark-text);
-  }
-
-  /* date inputのダークモード */
-  html.dark input[type="date"]::-webkit-calendar-picker-indicator {
-    filter: invert(1);
   }
 }
