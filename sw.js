@@ -1,21 +1,21 @@
 // 💡 アップデート時はここを v2, v3... と書き換えることで更新が発火します
-const CACHE_NAME = "grindmoney-v46";
+const CACHE_NAME = 'grindmoney-v47';
 const urlsToCache = [
-  "./",
-  "./index.html",
-  "./main.js",
-  "./styles.css",
-  "./icon-192.png",
-  "./icon-512.png",
+  './',
+  './index.html',
+  './main.js',
+  './styles.css',
+  './icon-192.png',
+  './icon-512.png',
 ];
 
 const externalUrlsToCache = [
-  "https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.8.0/sql-wasm.js",
-  "https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.8.0/sql-wasm.wasm",
+  'https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.8.0/sql-wasm.js',
+  'https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.8.0/sql-wasm.wasm',
 ];
 
 // インストール時にキャッシュを作成
-self.addEventListener("install", (event) => {
+self.addEventListener('install', (event) => {
   // 新しいService Workerを即座にアクティブにする
   self.skipWaiting();
 
@@ -26,18 +26,16 @@ self.addEventListener("install", (event) => {
       // 外部CDNファイルはCORS対応のため cors で個別に追加
       for (const url of externalUrlsToCache) {
         try {
-          const request = new Request(url, { mode: "cors" });
+          const request = new Request(url, { mode: 'cors' });
           const response = await fetch(request);
           // 404エラーなどで壊れたキャッシュを保存しないための防波堤
           if (response.ok) {
             await cache.put(request, response);
           } else {
-            throw new Error(
-              `Critical asset fetch failed: ${response.status} for ${url}`,
-            );
+            throw new Error(`Critical asset fetch failed: ${response.status} for ${url}`);
           }
         } catch (error) {
-          console.error("外部リソースのキャッシュに失敗しました:", url, error);
+          console.error('外部リソースのキャッシュに失敗しました:', url, error);
           throw error; // コアリソースの失敗はインストール全体を中断（失敗）させる
         }
       }
@@ -46,7 +44,7 @@ self.addEventListener("install", (event) => {
 });
 
 // 古いキャッシュを削除
-self.addEventListener("activate", (event) => {
+self.addEventListener('activate', (event) => {
   event.waitUntil(
     caches
       .keys()
@@ -64,7 +62,7 @@ self.addEventListener("activate", (event) => {
 });
 
 // fetchイベントでキャッシュを返す
-self.addEventListener("fetch", (event) => {
+self.addEventListener('fetch', (event) => {
   event.respondWith(
     caches.match(event.request).then((response) => {
       // 1. キャッシュがあればそれを返す
@@ -75,9 +73,9 @@ self.addEventListener("fetch", (event) => {
       return fetch(event.request).catch(() => {
         // 3. オフラインかつキャッシュにもない場合のフォールバック（HTMLへのアクセス時のみ）
         if (
-          event.request.mode === "navigate" ||
-          (event.request.headers.get("accept") &&
-            event.request.headers.get("accept").includes("text/html"))
+          event.request.mode === 'navigate' ||
+          (event.request.headers.get('accept') &&
+            event.request.headers.get('accept').includes('text/html'))
         ) {
           const fallbackHtml = `
             <!DOCTYPE html>
@@ -101,7 +99,7 @@ self.addEventListener("fetch", (event) => {
             </html>
           `;
           return new Response(fallbackHtml, {
-            headers: { "Content-Type": "text/html; charset=utf-8" },
+            headers: { 'Content-Type': 'text/html; charset=utf-8' },
           });
         }
       });
