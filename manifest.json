@@ -1,7 +1,7 @@
 {
   "name": "GrindMoney",
   "short_name": "GrindMoney",
-  "start_url": "/index.html",
+  "start_url": "./index.html",
   "display": "standalone",
   "background_color": "#fafafa",
   "theme_color": "#f8fafc",
@@ -19,7 +19,7 @@
   ],
   "file_handlers": [
     {
-      "action": "/index.html",
+      "action": "./index.html",
       "accept": {
         "application/x-sqlite3": [".money", ".grind"]
       }

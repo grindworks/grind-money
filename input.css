@@ -213,4 +213,12 @@
     outline-offset: 2px;
     border-radius: 4px;
   }
+
+  /* View Transition の対象を明細リストに限定し、画面全体のモッサリ感を排除 */
+  :root {
+    view-transition-name: none;
+  }
+  #blocks-container {
+    view-transition-name: block-list;
+  }
 }

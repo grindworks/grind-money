@@ -120,6 +120,17 @@ function setDirty(state) {
     }
   }
 
+  const floatingSave = document.getElementById('floating-save-btn');
+  if (floatingSave) {
+    if (state) {
+      floatingSave.classList.remove('hidden');
+      floatingSave.classList.add('flex');
+    } else {
+      floatingSave.classList.add('hidden');
+      floatingSave.classList.remove('flex');
+    }
+  }
+
   // タブのタイトルとファイル名バッジの反映
   const fileName = fileHandle && fileHandle.name ? fileHandle.name : 'Unsaved.money';
   const titleBase = `${fileName} - GrindMoney`;
@@ -302,6 +313,10 @@ function migrateDatabase() {
       const columns = res[0].values.map((col) => col[1]);
       if (!columns.includes('account')) {
         db.run('ALTER TABLE records ADD COLUMN account TEXT');
+        setDirty(true);
+      }
+      if (!columns.includes('sort_order')) {
+        db.run('ALTER TABLE records ADD COLUMN sort_order INTEGER DEFAULT 0');
         setDirty(true);
       }
     }
@@ -801,6 +816,66 @@ function autoSuggestAccount(memoInput) {
   }
 }
 
+// --- 決済（回収・支払）行の自動生成ロジック ---
+window.createCollectionRecord = function (id) {
+  if (!db) return;
+  let stmt;
+  let insertStmt = null;
+  try {
+    stmt = db.prepare('SELECT parent_id, memo, amount, account FROM records WHERE id = ?');
+    stmt.bind([id]);
+    if (stmt.step()) {
+      const [parent_id, memo, amount, account] = stmt.get();
+
+      // 今日の日付を取得
+      const today = new Date();
+      const dateStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')} 00:00:00`;
+
+      // 金額から売上（プラス）か経費（マイナス）かを判定してタグを生成
+      const safeAmount = amount ? parseInt(amount, 10) : 0;
+      const isIncome = safeAmount >= 0;
+      const tag = isIncome ? '#入金' : '#支払';
+      const newAccount = '普通預金'; // 回収・支払のデフォルト科目を普通預金にセット
+
+      // 元のメモから既存の #入金 や #支払 を除去してから、新しいタグを付与する
+      const cleanMemo = memo ? memo.replace(/#入金|#支払|#決済/g, '').trim() : '';
+      const newMemo = `${cleanMemo} (決済) ${tag}`;
+
+      insertStmt = db.prepare(
+        'INSERT INTO records (parent_id, memo, amount, account, created_at, sort_order) VALUES (?, ?, ?, ?, ?, ?)',
+      );
+      insertStmt.run([parent_id, newMemo, amount, newAccount, dateStr, 999]); // 一番下に追加
+
+      const res = db.exec('SELECT last_insert_rowid()');
+      const newId = res[0].values[0][0];
+
+      setDirty(true);
+      renderData();
+
+      showToast(
+        '決済行を作成しました。日付と金額を調整してください',
+        '<span class="text-emerald-400">✅</span>',
+      );
+
+      // 複製された行の日付入力欄にフォーカスを当てる
+      requestAnimationFrame(() => {
+        const newDateEl = document.querySelector(
+          `span[data-id="${newId}"][data-field="created_at"]`,
+        );
+        if (newDateEl) {
+          newDateEl.focus();
+          window.getSelection().selectAllChildren(newDateEl);
+        }
+      });
+    }
+  } catch (e) {
+    console.error(e);
+  } finally {
+    if (stmt) stmt.free();
+    if (insertStmt) insertStmt.free();
+  }
+};
+
 // --- インプレース編集機能 ---
 function updateRecord(id, field, newValue, element) {
   if (!db) return;
@@ -897,7 +972,11 @@ function updateRecord(id, field, newValue, element) {
         // 型の違い（"100"と100など）を許容するため == を使用
         // カンマが除去された表示を元に戻す
         if (element && field === 'amount') {
-          element.innerText = val !== null ? val.toLocaleString('ja-JP') : '';
+          if (element.tagName === 'INPUT') {
+            element.value = val !== null ? val.toLocaleString('ja-JP') : '';
+          } else {
+            element.innerText = val !== null ? val.toLocaleString('ja-JP') : '';
+          }
         }
         return; // 変更なし
       }
@@ -948,7 +1027,11 @@ function updateRecord(id, field, newValue, element) {
   if (field === 'amount') {
     // DOM全体を破壊せず、金額表示と合計値のみをソフトに更新する（クリック消失バグ防止）
     if (element) {
-      element.innerText = val !== null ? val.toLocaleString('ja-JP') : '';
+      if (element.tagName === 'INPUT') {
+        element.value = val !== null ? val.toLocaleString('ja-JP') : '';
+      } else {
+        element.innerText = val !== null ? val.toLocaleString('ja-JP') : '';
+      }
     }
     updateTotalsOnly();
   } else if (field === 'created_at') {
@@ -1040,7 +1123,7 @@ function updateTotalsOnly() {
     // 1. 総合計を更新
     let grandTotal = 0;
     stmtTotal = db.prepare(
-      `SELECT SUM(amount) FROM records WHERE parent_id IS NOT NULL${whereClause}`,
+      `SELECT SUM(amount) FROM records WHERE parent_id IS NOT NULL AND COALESCE(memo, '') NOT LIKE '%#入金%' AND COALESCE(memo, '') NOT LIKE '%#支払%' AND COALESCE(memo, '') NOT LIKE '%#決済%'${whereClause}`,
     );
     stmtTotal.bind(params);
     if (stmtTotal.step()) {
@@ -1049,7 +1132,9 @@ function updateTotalsOnly() {
     animateTotal(Math.round(grandTotal));
 
     // 2. 各ブロックの合計を更新
-    stmtBlock = db.prepare(`SELECT SUM(amount) FROM records WHERE parent_id = ?${whereClause}`);
+    stmtBlock = db.prepare(
+      `SELECT SUM(amount) FROM records WHERE parent_id = ? AND COALESCE(memo, '') NOT LIKE '%#入金%' AND COALESCE(memo, '') NOT LIKE '%#支払%' AND COALESCE(memo, '') NOT LIKE '%#決済%'${whereClause}`,
+    );
     const blocksRes = db.exec('SELECT id FROM records WHERE parent_id IS NULL');
     if (blocksRes.length > 0) {
       blocksRes[0].values.forEach(([blockId]) => {
@@ -1389,7 +1474,10 @@ function changeFiscalMonth() {
   const current = getDbSetting('fiscalMonth', '4');
   const input = prompt('年度の開始月（1〜12）を入力してください:', current);
   if (input !== null) {
-    const month = parseInt(input, 10);
+    const halfInput = input.replace(/[０-９]/g, (s) =>
+      String.fromCharCode(s.charCodeAt(0) - 0xfee0),
+    );
+    const month = parseInt(halfInput, 10);
     if (month >= 1 && month <= 12) {
       setDbSetting('fiscalMonth', month.toString());
       updateFiscalYearButton();
@@ -1702,7 +1790,7 @@ function renderData(focusBlockId = null) {
                 .money ファイルをドラッグ＆ドロップするか、<br>上の入力欄から最初のブロックを作成しましょう。
               </p>
 
-              <button onclick="document.getElementById('new-block-memo').focus()" class="bg-slate-900 hover:bg-slate-800 text-white px-6 py-3 rounded-full text-sm font-bold shadow-md transition-all active:scale-95 flex items-center gap-2">
+              <button onclick="const el = document.getElementById('new-block-memo'); el.focus(); el.scrollIntoView({behavior: 'smooth', block: 'center'});" class="bg-slate-900 hover:bg-slate-800 text-white px-6 py-3 rounded-full text-sm font-bold shadow-md transition-all active:scale-95 flex items-center gap-2">
                 <span class="text-lg font-light leading-none mb-0.5">+</span> 新しいブロックを作る
               </button>
 
@@ -1737,7 +1825,12 @@ function renderData(focusBlockId = null) {
   filteredTree.forEach((block) => {
     block.children.forEach((item) => {
       const safeAmount = parseInt(item.amount || 0, 10);
-      grandTotal += safeAmount;
+
+      // 決済（回収・支払）行は総合計から除外する
+      const isCollection = (item.memo || '').match(/#入金|#支払|#決済/);
+      if (!isCollection) {
+        grandTotal += safeAmount;
+      }
 
       // メモ欄から「#タグ」を正規表現で抽出して集計（全角ハッシュタグも吸収）
       const tags = (item.memo || '').match(/[#＃][^\s　,、。\.・()（）「」]+/g) || [];
@@ -1782,6 +1875,7 @@ function renderData(focusBlockId = null) {
     // タグを金額が大きい順にソートして表示
     Object.entries(tagTotals)
       .sort((a, b) => b[1].amount - a[1].amount)
+      .slice(0, 10) // 💡 ここに .slice(0, 10) を追加すると上位10件のみの表示になります
       .forEach(([tag, data]) => {
         const a = document.createElement('a');
         a.className =
@@ -1815,6 +1909,7 @@ function renderData(focusBlockId = null) {
 
     Object.entries(tagTotals)
       .sort((a, b) => b[1].amount - a[1].amount)
+      .slice(0, 10) // 💡 スマホ用表示も同様に制限する場合は追加します
       .forEach(([tag, data]) => {
         const btn = document.createElement('button');
         btn.className =
@@ -1885,7 +1980,10 @@ function updateOrCreateBlockElement(block, existingEl = null) {
     blockEl.className = 'group/block relative scroll-mt-36 sm:scroll-mt-48';
   }
 
-  const blockTotal = block.children.reduce((sum, item) => sum + parseInt(item.amount || 0, 10), 0);
+  const blockTotal = block.children.reduce((sum, item) => {
+    const isCollection = (item.memo || '').match(/#入金|#支払|#決済/);
+    return isCollection ? sum : sum + parseInt(item.amount || 0, 10);
+  }, 0);
 
   const today = new Date();
   const yyyy = today.getFullYear();
@@ -1962,7 +2060,7 @@ function updateOrCreateBlockElement(block, existingEl = null) {
     }
 
     const accStr = item.account || '';
-    let accountDisp = `<input type="text" data-id="${item.id}" data-field="account" list="account-suggestions" value="${escapeHtml(accStr)}" placeholder="科目" onfocus="this.select()" oninput="setDirty(true)" onkeydown="if(event.key==='Enter' && !event.isComposing){event.preventDefault();this.blur();}" onblur="updateRecord(${item.id}, 'account', this.value, this)" class="text-xs text-blue-600 bg-blue-50 border border-blue-200 px-1.5 py-0.5 rounded mr-2 outline-none focus:ring-2 focus:ring-blue-400 focus:bg-blue-100 cursor-text transition-colors hover:bg-blue-100 w-[60px] sm:w-[72px] shrink-0 text-center placeholder-blue-300">`;
+    let accountDisp = `<input type="text" data-id="${item.id}" data-field="account" list="account-suggestions" value="${escapeHtml(accStr)}" placeholder="科目" onfocus="this.select()" oninput="setDirty(true)" onkeydown="if(event.key==='Enter' && !event.isComposing){event.preventDefault();this.blur();}" onblur="updateRecord(${item.id}, 'account', this.value, this)" class="text-xs text-blue-600 bg-blue-50 border border-blue-200 px-1.5 py-0.5 rounded mr-2 outline-none focus:ring-2 focus:ring-blue-400 focus:bg-blue-100 cursor-text transition-colors hover:bg-blue-100 w-[84px] sm:w-[100px] shrink-0 text-left placeholder-blue-300">`;
 
     itemsHtml += `
       <div class="flex justify-between items-center px-4 sm:px-8 py-3.5 border-b border-slate-50 group/item hover:bg-slate-50/80 transition-colors">
@@ -1972,8 +2070,11 @@ function updateOrCreateBlockElement(block, existingEl = null) {
           <span data-id="${item.id}" data-field="memo" contenteditable="true" oninput="setDirty(true)" onpaste="handlePlainTextPaste(event)" onkeydown="if(event.key==='Enter' && !event.isComposing){event.preventDefault();this.blur();}" onblur="updateRecord(${item.id}, 'memo', this.innerText, this)" class="text-slate-700 font-medium truncate outline-none focus:bg-blue-50 focus:ring-2 focus:ring-blue-200 px-1 rounded cursor-text transition-colors empty:inline-block empty:min-w-12 empty:bg-slate-100 empty:before:content-['✎_未入力'] empty:before:text-slate-400 empty:before:text-xs empty:before:font-normal empty:before:pointer-events-none empty:focus:before:opacity-50">${escapeHtml(item.memo)}</span>
         </div>
         <div class="flex items-center space-x-2 sm:space-x-4 ml-2 sm:ml-auto shrink-0">
-          <span data-id="${item.id}" data-field="amount" contenteditable="true" inputmode="decimal" oninput="setDirty(true)" onfocus="window.getSelection().selectAllChildren(this)" onpaste="handlePlainTextPaste(event)" onkeydown="if(event.key==='Enter' && !event.isComposing){event.preventDefault();this.blur();}" onblur="updateRecord(${item.id}, 'amount', this.innerText, this)" class="font-medium tabular-nums tracking-tight text-slate-900 outline-none focus:bg-blue-50 focus:ring-2 focus:ring-blue-200 px-1 rounded cursor-text transition-colors empty:inline-block empty:min-w-8 empty:bg-slate-100 empty:before:content-['0'] empty:before:text-slate-400 empty:before:text-xs empty:before:font-sans empty:before:pointer-events-none empty:focus:before:opacity-50">${item.amount !== null && item.amount !== '' && item.amount !== undefined ? item.amount.toLocaleString('ja-JP') : ''}</span><span class="text-slate-400 text-xs font-sans">円</span>
+          <input type="text" data-id="${item.id}" data-field="amount" inputmode="decimal" placeholder="0" value="${item.amount !== null && item.amount !== '' && item.amount !== undefined ? item.amount.toLocaleString('ja-JP') : ''}" oninput="setDirty(true)" onfocus="this.select()" onpaste="handlePlainTextPaste(event)" onkeydown="if(event.key==='Enter' && !event.isComposing){event.preventDefault();this.blur();}" onblur="updateRecord(${item.id}, 'amount', this.value, this)" class="bg-transparent border-0 p-0 font-medium tabular-nums tracking-tight text-slate-900 text-right outline-none focus:bg-blue-50 focus:ring-2 focus:ring-blue-200 px-1 rounded cursor-text transition-colors w-[60px] sm:w-[80px]"><span class="text-slate-400 text-xs font-sans">円</span>
           <div class="flex items-center space-x-1 md:opacity-0 md:group-hover/item:opacity-100 focus-within:opacity-100 transition-opacity">
+            <button onclick="createCollectionRecord(${item.id})" aria-label="決済(回収・支払)済にする" class="text-slate-300 hover:text-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-200 rounded p-2 -m-1 transition-colors cursor-pointer" title="この取引の「決済行」を自動生成する">
+              <svg class="w-4 h-4 pointer-events-none"><use href="#icon-check-circle"></use></svg>
+            </button>
             <button onclick="duplicateRecord(${item.id})" aria-label="複製" class="text-slate-300 hover:text-primary focus:outline-none focus:ring-2 focus:ring-primary/30 rounded p-2 -m-1 transition-colors cursor-pointer" title="複製">
               <svg class="w-4 h-4 pointer-events-none"><use href="#icon-copy"></use></svg>
             </button>
@@ -2063,12 +2164,12 @@ function updateOrCreateBlockElement(block, existingEl = null) {
             <input type="date" class="${dateInputClass}" value="${defaultDate}" oninput="setDirty(true); checkFutureDate(this)">
             <button type="button" onclick="adjustDate(this, 1)" aria-label="1日進める" class="text-slate-400 hover:text-slate-800 w-8 h-8 flex items-center justify-center font-bold cursor-pointer outline-none transition-colors touch-manipulation" title="+1日">+</button>
           </div>
-          <input type="text" placeholder="科目" value="${escapeHtml(defaultAccount)}" list="account-suggestions" oninput="setDirty(true)" onfocus="this.select()" onkeydown="if(event.key==='Enter'){ if(event.isComposing){ event.preventDefault(); return; } event.preventDefault();this.closest('form').querySelector('.item-memo').focus();}" class="item-account bg-transparent border-0 focus:ring-0 p-0 text-slate-600 placeholder-slate-400 w-20 shrink-0 text-sm outline-none text-center" style="min-width: 60px;">
+          <input type="text" placeholder="科目" value="${escapeHtml(defaultAccount)}" list="account-suggestions" oninput="setDirty(true)" onfocus="this.select()" onkeydown="if(event.key==='Enter'){ if(event.isComposing){ return; } event.preventDefault();this.closest('form').querySelector('.item-memo').focus();}" class="item-account bg-transparent border-0 focus:ring-0 p-0 text-slate-600 placeholder-slate-400 w-20 shrink-0 text-sm outline-none text-center" style="min-width: 60px;">
         </div>
 
         <div class="flex items-center gap-2 sm:gap-3 w-full sm:w-auto sm:flex-1 pl-6 sm:pl-0 mt-2 sm:mt-0">
-          <input type="text" placeholder="明細を追加..." list="memo-suggestions" oninput="setDirty(true)" onblur="autoSuggestAccount(this)" onfocus="if(window.innerWidth < 640) { setTimeout(() => this.closest('form').scrollIntoView({ behavior: 'smooth', block: 'center' }), 300); }" onkeydown="if(event.key==='Enter'){ if(event.isComposing){ event.preventDefault(); return; } event.preventDefault();this.closest('form').querySelector('.item-amount').focus();}" class="item-memo bg-transparent border-0 focus:ring-0 p-0 text-slate-900 placeholder-slate-400 flex-1 text-sm font-medium outline-none min-w-[100px]">
-          <input type="text" inputmode="decimal" placeholder="金額(数式OK)" class="item-amount bg-transparent border-0 focus:ring-0 p-0 text-right tabular-nums tracking-tight text-slate-900 placeholder-slate-400 w-24 sm:w-32 shrink-0 text-sm outline-none" style="min-width: 104px;" oninput="setDirty(true)" onfocus="if(window.innerWidth < 640) { setTimeout(() => this.closest('form').scrollIntoView({ behavior: 'smooth', block: 'center' }), 300); }" onkeydown="if(event.key==='Enter' && event.isComposing){ event.preventDefault(); event.stopPropagation(); } else if(event.key==='Tab' && !event.shiftKey){ event.preventDefault(); this.closest('form').requestSubmit(); }" title="数式計算（+ - * /）が使えます">
+          <input type="text" placeholder="明細を追加..." list="memo-suggestions" oninput="setDirty(true)" onblur="autoSuggestAccount(this)" onfocus="if(window.innerWidth < 640) { setTimeout(() => this.closest('form').scrollIntoView({ behavior: 'smooth', block: 'center' }), 300); }" onkeydown="if(event.key==='Enter'){ if(event.isComposing){ return; } event.preventDefault();this.closest('form').querySelector('.item-amount').focus();}" class="item-memo bg-transparent border-0 focus:ring-0 p-0 text-slate-900 placeholder-slate-400 flex-1 text-sm font-medium outline-none min-w-[100px]">
+          <input type="text" inputmode="decimal" placeholder="金額(数式OK)" class="item-amount bg-transparent border-0 focus:ring-0 p-0 text-right tabular-nums tracking-tight text-slate-900 placeholder-slate-400 w-24 sm:w-32 shrink-0 text-sm outline-none" style="min-width: 104px;" oninput="setDirty(true)" onfocus="if(window.innerWidth < 640) { setTimeout(() => this.closest('form').scrollIntoView({ behavior: 'smooth', block: 'center' }), 300); }" onkeydown="if(event.key==='Enter' && event.isComposing){ return; } else if(event.key==='Tab' && !event.shiftKey){ event.preventDefault(); this.closest('form').requestSubmit(); }" title="数式計算（+ - * /）が使えます">
         </div>
         <button type="submit" class="hidden">追加</button>
       </form>
@@ -2750,134 +2851,166 @@ function exportCSV(format = 'yayoi') {
     return;
   }
 
-  // サニタイズ用のヘルパー関数 (CSV Injection / DDE 対策)
   function sanitizeCsvCell(value) {
     let str = value ? value.toString() : '';
-    // メモ欄などの改行をスペースに置換し、CSVフォーマットの崩れを防ぐ
     str = str.replace(/\r?\n/g, ' ');
-    // 先頭が危険な文字で始まる場合はシングルクォートを付与して数式解釈を無効化
-    if (/^[=+\-@\t\r]/.test(str)) {
-      str = "'" + str;
-    }
+    if (/^[=+\-@\t\r]/.test(str)) str = "'" + str;
     return `"${str.replace(/"/g, '""')}"`;
   }
 
   let csvRows = [];
   if (format === 'freee') {
-    // freeeはヘッダー行が必要
     csvRows.push(
-      '収支区分,管理番号,発生日,支払期日,取引先,勘定科目,税区分,金額,税計算区分,税額,備考,品目,部門,メモタグ,決済期日,決済口座,決済金額',
+      '"収支区分","管理番号","発生日","支払期日","取引先","勘定科目","税区分","金額","税計算区分","税額","備考","品目","部門","メモタグ","決済期日","決済口座","決済金額"',
     );
   } else if (format === 'mf') {
     csvRows.push(
       '"取引No","取引日","借方勘定科目","借方補助科目","借方部門","借方税区分","借方金額","借方税額","貸方勘定科目","貸方補助科目","貸方部門","貸方税区分","貸方金額","貸方税額","摘要","仕訳メモ","タグ"',
     );
   } else if (format === 'generic') {
-    csvRows.push('"ID","日付","勘定科目","摘要","金額"');
+    csvRows.push('"ID","日付","借方勘定科目","貸方勘定科目","金額","摘要"');
   }
 
+  const includeCollection = document.getElementById('export-collections')?.checked;
+
   values.forEach((row) => {
-    // row[0]: id, row[1]: memo, row[2]: amount, row[3]: created_at
+    const id = row[0];
     const memo = row[1] ? row[1].toString() : '';
-    const amount = row[2] || 0;
+    const rawAmount = parseInt(row[2] || 0, 10);
+    const absAmount = Math.abs(rawAmount); // 複式簿記のためマイナスを絶対値に変換
+    const isIncome = rawAmount >= 0; // プラスなら売上系、マイナスなら経費・支払系
     const account = row[4] ? row[4].toString() : '雑費';
     const escapedMemo = sanitizeCsvCell(memo);
-    const escapedAccount = sanitizeCsvCell(account);
 
-    let dateFreeway = '000000';
-    let dateSlash = '';
-    let dateHyphen = '';
+    // 🌟 タグ判定による「発生」か「決済(消込)」かの判別
+    const isCollection = memo.includes('#入金') || memo.includes('#支払') || memo.includes('#決済');
 
-    if (row[3]) {
-      // 保存時と同じく文字列から直接パースする
-      const dStr = row[3].split(' ')[0];
-      const parts = dStr.split('-');
-      if (parts.length === 3) {
-        const yyyy = parseInt(parts[0], 10);
-        const mm = parts[1];
-        const dd = parts[2];
+    // 「自動連携しているため決済行は出力しない」設定の場合はスキップ
+    if (isCollection && !includeCollection) return;
 
-        const numMonth = parseInt(mm, 10);
-        const numDay = parseInt(dd, 10);
+    // 🌟 最終調整：空気を読む自動仕訳ロジック
+    let debitAcc, creditAcc;
 
-        let freewayYear;
-        if (yyyy > 2019 || (yyyy === 2019 && numMonth >= 5)) {
-          // 令和: 30 + 令和の年数 (例: 2024年 = 令和6年 = 36)
-          freewayYear = 30 + (yyyy - 2018);
-        } else if (yyyy > 1989 || (yyyy === 1989 && numMonth >= 1 && numDay >= 8)) {
-          // 平成: yyyy - 1988
-          freewayYear = yyyy - 1988;
-        } else {
-          // 昭和: yyyy - 1925
-          freewayYear = yyyy - 1925;
-        }
-        dateFreeway = `${String(freewayYear).padStart(2, '0')}${mm}${dd}`;
+    if (!isCollection) {
+      // --- パターンA: 発生行 ---
+      // 収入は「売掛金」、経費は「現金」を基本の相手科目にする
+      let partnerAcc = isIncome ? '売掛金' : '現金';
 
-        dateSlash = `${yyyy}/${mm}/${dd}`;
-        dateHyphen = `${yyyy}-${mm}-${dd}`;
+      // メモに特定のタグがあれば、相手科目を上書き（クレカ払い等に対応）
+      if (memo.includes('#現金')) partnerAcc = '現金';
+      else if (memo.includes('#預金') || memo.includes('#振込')) partnerAcc = '普通預金';
+      else if (memo.includes('#クレカ') || memo.includes('#カード') || memo.includes('#未払'))
+        partnerAcc = '未払金';
+      else if (memo.includes('#掛')) partnerAcc = isIncome ? '売掛金' : '買掛金';
+
+      if (isIncome) {
+        debitAcc = partnerAcc; // [借] 売掛金 / 現金 / 普通預金
+        creditAcc = account; // [貸] 売上高 など
+      } else {
+        debitAcc = account; // [借] 消耗品費 など
+        creditAcc = partnerAcc; // [貸] 現金 / 未払金
+      }
+    } else {
+      // --- パターンB: 決済（回収・支払）行 ---
+      if (isIncome) {
+        debitAcc = account; // [借] 普通預金 など（画面で指定した口座）
+        creditAcc = '売掛金'; // [貸] 売掛金（消込）
+      } else {
+        debitAcc = '未払金'; // [借] 未払金（消込）
+        creditAcc = account; // [貸] 普通預金 など
       }
     }
 
-    let cols = [];
-    if (format === 'freeway') {
-      // 仕様書準拠: A〜Q列までの17列
-      cols = Array(17).fill('');
-      cols[0] = '0'; // A: 伝票番号 (必須: 未使用でも0)
-      cols[3] = dateFreeway; // D: 日付 (和暦6桁: 令和は30+年)
-      cols[4] = '""'; // E: 借方科目コード (持っていないため空)
-      cols[5] = escapedAccount; // F: 借方科目名
-      cols[7] = '1100'; // H: 貸方科目コード (現金)
-      cols[8] = '"現金"'; // I: 貸方科目名
-      cols[10] = amount.toString(); // K: 金額 (カンマなし)
-      cols[11] = escapedMemo; // L: 摘要
-      cols[12] = '21'; // M: 課税区分
-      cols[13] = '10'; // N: 税率区分
-      cols[15] = '0'; // P: 手形期日 (必須: 未使用でも0)
+    const escDebit = sanitizeCsvCell(debitAcc);
+    const escCredit = sanitizeCsvCell(creditAcc);
+
+    // 日付フォーマット変換
+    const dStr = row[3] ? row[3].split(' ')[0] : '';
+    let fwYear = '00',
+      mm = '00',
+      dd = '00',
+      sl = '',
+      hy = '';
+    const parts = dStr.split('-');
+    if (parts.length === 3) {
+      const yyyy = parseInt(parts[0], 10);
+      mm = parts[1];
+      dd = parts[2];
+      sl = `${yyyy}/${mm}/${dd}`;
+      hy = `${yyyy}-${mm}-${dd}`;
+      fwYear = yyyy - 1925;
+      if (yyyy > 2019 || (yyyy === 2019 && parseInt(mm, 10) >= 5)) fwYear = 30 + (yyyy - 2018);
+      else if (
+        yyyy > 1989 ||
+        (yyyy === 1989 &&
+          (parseInt(mm, 10) > 1 || (parseInt(mm, 10) === 1 && parseInt(dd, 10) >= 8)))
+      )
+        fwYear = yyyy - 1988;
+    }
+    const fwDate = `${String(fwYear).padStart(2, '0')}${mm}${dd}`;
+
+    // 各フォーマットへの出力
+    if (format === 'mf') {
+      let cols = Array(17).fill('""');
+      cols[0] = `"${id}"`;
+      cols[1] = `"${sl}"`;
+      cols[2] = escDebit;
+      cols[5] = '"対象外"';
+      cols[6] = `"${absAmount}"`;
+      cols[8] = escCredit;
+      cols[11] = '"対象外"';
+      cols[12] = `"${absAmount}"`;
+      cols[14] = escapedMemo;
+      csvRows.push(cols.join(','));
     } else if (format === 'yayoi') {
-      cols = Array(25).fill('');
-      cols[0] = '2000'; // 識別フラグ
-      cols[2] = '0'; // 決算
-      cols[3] = dateSlash;
-      cols[4] = escapedAccount;
-      cols[7] = '"課税対応仕入"';
-      cols[8] = amount.toString();
-      cols[10] = '"現金"';
+      let cols = Array(25).fill('""');
+      cols[0] = '"2111"';
+      cols[2] = '"0"';
+      cols[3] = `"${sl}"`;
+      cols[4] = escDebit;
+      cols[7] = '"対象外"';
+      cols[8] = `"${absAmount}"`;
+      cols[10] = escCredit;
       cols[13] = '"対象外"';
-      cols[14] = amount.toString();
+      cols[14] = `"${absAmount}"`;
       cols[16] = escapedMemo;
-      cols[19] = '0'; // タイプ (0=仕訳)
+      cols[19] = '"0"';
+      csvRows.push(cols.join(','));
+    } else if (format === 'freeway') {
+      let cols = Array(17).fill('""');
+      cols[0] = '"0"';
+      cols[3] = `"${fwDate}"`;
+      cols[5] = escDebit;
+      cols[8] = escCredit;
+      cols[10] = `"${absAmount}"`;
+      cols[11] = escapedMemo;
+      cols[12] = '"0"';
+      cols[13] = '"0"';
+      cols[15] = '"0"';
+      csvRows.push(cols.join(','));
     } else if (format === 'freee') {
-      cols = Array(17).fill('');
-      cols[0] = '"支出"';
-      cols[1] = `"${row[0]}"`; // 管理番号 (GrindMoneyの内部ID)
-      cols[2] = `"${dateHyphen}"`;
-      cols[5] = escapedAccount;
-      cols[6] = '"課税仕入"';
-      cols[7] = amount.toString();
+      let cols = Array(17).fill('""');
+      cols[0] = isIncome ? '"収入"' : '"支出"';
+      cols[1] = `"${id}"`;
+      cols[2] = `"${hy}"`;
+      cols[5] = !isCollection ? sanitizeCsvCell(account) : '"口座振替"';
+      cols[6] = isIncome ? '"対象外"' : '"課税仕入"';
+      cols[7] = `"${absAmount}"`;
       cols[8] = '"税込"';
       cols[10] = escapedMemo;
-      cols[14] = `"${dateHyphen}"`;
-      cols[15] = '"現金"';
-      cols[16] = amount.toString();
-    } else if (format === 'mf') {
-      cols = Array(17).fill('""');
-      cols[0] = `"${row[0]}"`; // 取引No (GrindMoneyの内部ID)
-      cols[1] = `"${dateSlash}"`; // 取引日
-      cols[2] = escapedAccount; // 借方勘定科目
-      cols[5] = '"対象外"'; // 借方税区分
-      cols[6] = `"${amount}"`; // 借方金額
-      cols[8] = '"現金"'; // 貸方勘定科目
-      cols[11] = '"対象外"'; // 貸方税区分
-      cols[12] = `"${amount}"`; // 貸方金額
-      cols[14] = escapedMemo; // 摘要
+      if (isCollection) {
+        cols[14] = `"${hy}"`; // 決済日
+        cols[15] = sanitizeCsvCell(account); // 決済口座
+        cols[16] = `"${absAmount}"`;
+      }
+      csvRows.push(cols.join(','));
     } else if (format === 'generic') {
-      cols = [`"${row[0]}"`, `"${dateSlash}"`, escapedAccount, escapedMemo, `"${amount}"`];
+      csvRows.push(
+        [`"${id}"`, `"${sl}"`, escDebit, escCredit, `"${absAmount}"`, escapedMemo].join(','),
+      );
     }
-
-    csvRows.push(cols.join(','));
   });
 
-  // Windows系の会計ソフト（フリーウェイ経理等）向けに改行コードをCRLFにする
   const csvContent = csvRows.join('\r\n') + '\r\n';
   const bom = new Uint8Array([0xef, 0xbb, 0xbf]);
   const blob = new Blob([bom, csvContent], { type: 'text/csv;charset=utf-8;' });
@@ -2885,16 +3018,9 @@ function exportCSV(format = 'yayoi') {
 
   const today = new Date();
   const dateSuffix = `${today.getFullYear()}${String(today.getMonth() + 1).padStart(2, '0')}${String(today.getDate()).padStart(2, '0')}`;
-
   const a = document.createElement('a');
   a.href = url;
-  a.download = `${format}_${dateSuffix}.csv`;
-  if (format === 'freeway') {
-    // マニュアル準拠: 取込用ファイル名固定
-    a.download = 'KAI0000-Shiwake.CSV';
-  } else {
-    a.download = `${format}_${dateSuffix}.csv`;
-  }
+  a.download = format === 'freeway' ? 'KAI0000-Shiwake.CSV' : `${format}_${dateSuffix}.csv`;
   a.click();
   URL.revokeObjectURL(url);
 }
@@ -3213,6 +3339,11 @@ function executeCSVImport() {
       // その後、半角数字・ピリオド・マイナス以外を除去
       const amountStr = normalizedAmount.replace(/[^\d.-]/g, '');
       let amount = Math.round(parseFloat(amountStr));
+
+      // 文字列の末尾が「-」で終わっている場合はマイナス反転させる
+      if (amountStr.endsWith('-')) {
+        amount = -Math.abs(amount);
+      }
       if (amount > 10000000000000 || amount < -10000000000000) {
         amount = NaN; // 上限超過は弾く
       }
@@ -3339,8 +3470,10 @@ function copyAsMarkdown() {
     const date = row[0] ? row[0].split(' ')[0] : '日付なし';
     const account = row[1] || '未分類';
     const memo = row[2] || '名称未設定';
+    const amountStr =
+      row[3] !== null ? parseInt(row[3], 10).toLocaleString('ja-JP') + '円' : '金額未定';
 
-    markdown += `- **${date}** [${account}] ${memo}\n`;
+    markdown += `- **${date}** [${account}] ${memo} : **${amountStr}**\n`;
   });
 
   navigator.clipboard
@@ -4103,7 +4236,7 @@ function showTagModal(tag, data) {
   tbody.innerHTML = '';
 
   // 日付の降順にソートして明細を表示
-  const sortedItems = data.items.sort((a, b) => (b.date || '').localeCompare(a.date || ''));
+  const sortedItems = [...data.items].sort((a, b) => (b.date || '').localeCompare(a.date || ''));
 
   sortedItems.forEach((item) => {
     let dateDisp = '日付なし';
@@ -4262,10 +4395,11 @@ document.addEventListener('drop', async (e) => {
   }
 
   // 拡張子に応じて処理を分岐
+  const lowerName = file.name.toLowerCase();
   if (
-    file.name.endsWith('.money') ||
-    file.name.endsWith('.grind') ||
-    file.name.endsWith('.sqlite')
+    lowerName.endsWith('.money') ||
+    lowerName.endsWith('.grind') ||
+    lowerName.endsWith('.sqlite')
   ) {
     if (isDirty) {
       if (!confirm('未保存のデータがあります。変更を破棄して別のファイルを開きますか？')) return;
@@ -4280,7 +4414,7 @@ document.addEventListener('drop', async (e) => {
       };
       await processFileHandle(dummyHandle, true);
     }
-  } else if (file.name.endsWith('.csv')) {
+  } else if (lowerName.endsWith('.csv')) {
     // 隠された <input type="file"> を利用して、既存のインポートフローに流す
     const csvInput = document.getElementById('csv-input');
     if (csvInput) {
