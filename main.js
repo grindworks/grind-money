@@ -2873,6 +2873,121 @@ function exportCSV(format = 'yayoi') {
 
   const includeCollection = document.getElementById('export-collections')?.checked;
 
+  // フリーウェイ経理用 科目コード（数字）マッピング
+  const freewayCodeMap = {
+    現金: '1100',
+    当座預金: '1110',
+    普通預金: '1120',
+    定期預金: '1130',
+    受取手形: '1150',
+    売掛金: '1160',
+    有価証券: '1170',
+    商品: '1210',
+    貯蔵品: '1270',
+    前渡金: '1410',
+    前払金: '1410',
+    立替金: '1411',
+    仮払金: '1412',
+    前払費用: '1420',
+    未収収益: '1430',
+    短期貸付金: '1440',
+    未収入金: '1450',
+    仮払消費税: '1500',
+    建物: '2110',
+    構築物: '2120',
+    機械装置: '2130',
+    車両運搬具: '2150',
+    工具器具備品: '2160',
+    一括償却資産: '2170',
+    土地: '2210',
+    ソフトウェア: '2350',
+    出資金: '2620',
+    長期貸付金: '2630',
+    長期前払費用: '2810',
+    創立費: '3110',
+    開業費: '3120',
+    事業主貸: '3180',
+    店主貸: '3180',
+    支払手形: '4110',
+    買掛金: '4120',
+    短期借入金: '4130',
+    未払金: '4140',
+    未払費用: '4150',
+    前受金: '4160',
+    預り金: '4170',
+    未払法人税等: '4180',
+    未払消費税等: '4182',
+    仮受金: '4190',
+    前受収益: '4210',
+    賞与引当金: '4350',
+    仮受消費税: '4500',
+    長期借入金: '5110',
+    退職給与引当金: '5310',
+    資本金: '7110',
+    資本準備金: '7210',
+    利益準備金: '7310',
+    事業主借: '7320',
+    店主借: '7320',
+    元入金: '7330',
+    繰越利益剰余金: '7330',
+    売上高: '8000',
+    売上値引戻り高: '8050',
+    期首商品棚卸高: '8100',
+    当期仕入高: '8110',
+    仕入値引戻し高: '8150',
+    期末棚卸高: '8190',
+    給料手当: '8310',
+    給与手当: '8310',
+    役員報酬: '8310',
+    賞与: '8327',
+    退職金: '8330',
+    法定福利費: '8350',
+    福利厚生費: '8351',
+    外注工賃: '8352',
+    外注費: '8352',
+    旅費交通費: '8410',
+    通信費: '8420',
+    運賃: '8421',
+    荷造運賃: '8421',
+    車両費: '8430',
+    交際費: '8440',
+    接待交際費: '8440',
+    諸会費: '8441',
+    寄付金: '8442',
+    広告宣伝費: '8450',
+    会議費: '8460',
+    賃借料: '8510',
+    地代家賃: '8511',
+    地代: '8511',
+    家賃: '8512',
+    保険料: '8520',
+    損害保険料: '8520',
+    修繕費: '8530',
+    水道光熱費: '8540',
+    消耗品費: '8550',
+    事務用消耗品: '8550',
+    新聞図書費: '8560',
+    租税公課: '8570',
+    販売手数料: '8580',
+    支払手数料: '8581',
+    貸倒損失: '8590',
+    貸倒金: '8590',
+    減価償却費: '8592',
+    雑費: '8599',
+    受取利息: '8610',
+    受取配当金: '8620',
+    雑収入: '8790',
+    支払利息割引料: '8810',
+    支払利息: '8810',
+    利子割引料: '8810',
+    雑損失: '8990',
+    専従者給与: '9810',
+    リース料: '8510',
+    役員借入金: '5110',
+    役員貸付金: '2630',
+    前払前渡金: '1410',
+  };
+
   values.forEach((row) => {
     const id = row[0];
     const memo = row[1] ? row[1].toString() : '';
@@ -2951,62 +3066,70 @@ function exportCSV(format = 'yayoi') {
 
     // 各フォーマットへの出力
     if (format === 'mf') {
-      let cols = Array(17).fill('""');
-      cols[0] = `"${id}"`;
-      cols[1] = `"${sl}"`;
+      let cols = Array(17).fill('');
+      cols[0] = sanitizeCsvCell(id);
+      cols[1] = sanitizeCsvCell(sl);
       cols[2] = escDebit;
-      cols[5] = '"対象外"';
-      cols[6] = `"${absAmount}"`;
+      cols[5] = sanitizeCsvCell('対象外');
+      cols[6] = absAmount.toString();
       cols[8] = escCredit;
-      cols[11] = '"対象外"';
-      cols[12] = `"${absAmount}"`;
+      cols[11] = sanitizeCsvCell('対象外');
+      cols[12] = absAmount.toString();
       cols[14] = escapedMemo;
       csvRows.push(cols.join(','));
     } else if (format === 'yayoi') {
-      let cols = Array(25).fill('""');
-      cols[0] = '"2111"';
-      cols[2] = '"0"';
-      cols[3] = `"${sl}"`;
+      let cols = Array(25).fill('');
+      cols[0] = '2111';
+      cols[1] = sanitizeCsvCell(id); // ★ 伝票Noを指定（複合仕訳化による諸口表示を防止）
+      cols[2] = '0';
+      cols[3] = sanitizeCsvCell(sl);
       cols[4] = escDebit;
-      cols[7] = '"対象外"';
-      cols[8] = `"${absAmount}"`;
+      cols[7] = sanitizeCsvCell('対象外');
+      cols[8] = absAmount.toString();
       cols[10] = escCredit;
-      cols[13] = '"対象外"';
-      cols[14] = `"${absAmount}"`;
+      cols[13] = sanitizeCsvCell('対象外');
+      cols[14] = absAmount.toString();
       cols[16] = escapedMemo;
-      cols[19] = '"0"';
+      cols[19] = '0';
       csvRows.push(cols.join(','));
     } else if (format === 'freeway') {
-      let cols = Array(17).fill('""');
-      cols[0] = '"0"';
-      cols[3] = `"${fwDate}"`;
-      cols[5] = escDebit;
-      cols[8] = escCredit;
-      cols[10] = `"${absAmount}"`;
+      let cols = Array(17).fill('');
+      cols[0] = id.toString(); // 伝票No (数値として出力)
+      cols[3] = fwDate; // 日付 (数値的文字列として出力)
+      cols[5] = freewayCodeMap[debitAcc] || '000'; // 借方科目コード
+      cols[8] = freewayCodeMap[creditAcc] || '000'; // 貸方科目コード
+      cols[10] = absAmount.toString();
       cols[11] = escapedMemo;
-      cols[12] = '"0"';
-      cols[13] = '"0"';
-      cols[15] = '"0"';
+      cols[12] = '0';
+      cols[13] = '0';
+      cols[15] = '0';
       csvRows.push(cols.join(','));
     } else if (format === 'freee') {
-      let cols = Array(17).fill('""');
-      cols[0] = isIncome ? '"収入"' : '"支出"';
-      cols[1] = `"${id}"`;
-      cols[2] = `"${hy}"`;
-      cols[5] = !isCollection ? sanitizeCsvCell(account) : '"口座振替"';
-      cols[6] = isIncome ? '"対象外"' : '"課税仕入"';
-      cols[7] = `"${absAmount}"`;
-      cols[8] = '"税込"';
+      let cols = Array(17).fill('');
+      cols[0] = isIncome ? sanitizeCsvCell('収入') : sanitizeCsvCell('支出');
+      cols[1] = sanitizeCsvCell(id);
+      cols[2] = sanitizeCsvCell(hy);
+      cols[5] = !isCollection ? sanitizeCsvCell(account) : sanitizeCsvCell('口座振替');
+      cols[6] = isIncome ? sanitizeCsvCell('対象外') : sanitizeCsvCell('課税仕入');
+      cols[7] = absAmount.toString();
+      cols[8] = sanitizeCsvCell('税込');
       cols[10] = escapedMemo;
       if (isCollection) {
-        cols[14] = `"${hy}"`; // 決済日
+        cols[14] = sanitizeCsvCell(hy); // 決済日
         cols[15] = sanitizeCsvCell(account); // 決済口座
-        cols[16] = `"${absAmount}"`;
+        cols[16] = absAmount.toString();
       }
       csvRows.push(cols.join(','));
     } else if (format === 'generic') {
       csvRows.push(
-        [`"${id}"`, `"${sl}"`, escDebit, escCredit, `"${absAmount}"`, escapedMemo].join(','),
+        [
+          sanitizeCsvCell(id),
+          sanitizeCsvCell(sl),
+          escDebit,
+          escCredit,
+          absAmount.toString(),
+          escapedMemo,
+        ].join(','),
       );
     }
   });
