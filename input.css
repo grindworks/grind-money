@@ -3,9 +3,6 @@
 @custom-variant dark (&:where(.never-used));
 
 @theme {
-  --color-primary: #0f62fe;
-  --color-primary-hover: #0353e9;
-  --color-primary-50: #eff4ff;
   --font-sans: "Inter", "Noto Sans JP", "Helvetica Neue", Arial, sans-serif;
 
   /* アニメーション定義 */
@@ -209,7 +206,7 @@
 @layer base {
   /* フォーカスリングの統一スタイル */
   :focus-visible {
-    outline: 2px solid var(--color-primary);
+    outline: 2px solid var(--color-blue-600);
     outline-offset: 2px;
     border-radius: 4px;
   }

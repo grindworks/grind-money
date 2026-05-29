@@ -539,12 +539,8 @@ function showToast(message, iconHtml = '✅', type = 'normal') {
   const statusEl = document.getElementById('status');
   if (!statusEl) return;
 
-  const bgClass =
-    type === 'error'
-      ? 'bg-red-500/90 border-red-600/50'
-      : type === 'warning'
-        ? 'bg-red-900/90 border-red-700/50'
-        : 'bg-slate-800/90 border-slate-700/50';
+  // 通知の種類に関わらず、システム通知らしく安定した黒背景に統一
+  const bgClass = 'bg-slate-900/95 border-slate-800/50';
 
   statusEl.innerHTML = `${iconHtml} <span>${message}</span>`;
   statusEl.className = `fixed top-4 sm:top-8 left-1/2 -translate-x-1/2 backdrop-blur-sm text-white px-5 py-2.5 rounded-full text-xs font-medium shadow-xl border transition-all duration-500 z-50 flex items-center gap-2 translate-y-0 opacity-100 ${bgClass}`;
@@ -734,13 +730,33 @@ function insertRecord(parentId, memo, amountExpr, dateStr = null, accountStr = n
     return;
   }
 
-  let query = 'INSERT INTO records (parent_id, memo, amount, account) VALUES (?, ?, ?, ?)';
-  let params = [parentId, memo, parsedAmount, accountStr];
+  // 新しいアイテムが常にブロックの一番下に追加されるよう、現在の最大sort_orderを取得
+  let maxSort = 0;
+  if (parentId) {
+    let checkStmt;
+    try {
+      checkStmt = db.prepare('SELECT MAX(sort_order) FROM records WHERE parent_id = ?');
+      checkStmt.bind([parentId]);
+      if (checkStmt.step()) {
+        const val = checkStmt.get()[0];
+        if (val !== null) maxSort = val;
+      }
+    } catch (e) {
+      console.warn(e);
+    } finally {
+      if (checkStmt) checkStmt.free();
+    }
+  }
+  const newSortOrder = maxSort > 0 ? maxSort + 1 : 0;
+
+  let query =
+    'INSERT INTO records (parent_id, memo, amount, account, sort_order) VALUES (?, ?, ?, ?, ?)';
+  let params = [parentId, memo, parsedAmount, accountStr, newSortOrder];
 
   if (dateStr) {
     // タイムゾーンによるバグを回避するため、入力された日付を文字列のまま保存する
     query =
-      'INSERT INTO records (parent_id, memo, amount, account, created_at) VALUES (?, ?, ?, ?, ?)';
+      'INSERT INTO records (parent_id, memo, amount, account, sort_order, created_at) VALUES (?, ?, ?, ?, ?, ?)';
     params.push(dateStr + ' 00:00:00');
   }
 
@@ -831,20 +847,50 @@ window.createCollectionRecord = function (id) {
       const today = new Date();
       const dateStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')} 00:00:00`;
 
-      // 金額から売上（プラス）か経費（マイナス）かを判定してタグを生成
       const safeAmount = amount ? parseInt(amount, 10) : 0;
-      const isIncome = safeAmount >= 0;
+      let isIncome = safeAmount >= 0;
+
+      // 💡 修正1: 科目コードから収入か支出(経費)かをスマート判定
+      const acctCode = FREEWAY_CODE_MAP[account] || '';
+      if (
+        isIncome &&
+        account !== '売上高' &&
+        account !== '雑収入' &&
+        account !== '売掛金' &&
+        account !== '未収入金' &&
+        account !== '前受金'
+      ) {
+        if (
+          acctCode.startsWith('8') ||
+          acctCode.startsWith('1') ||
+          acctCode.startsWith('2') ||
+          acctCode.startsWith('3')
+        ) {
+          isIncome = false; // 実質的な出金（経費や資産の購入など）とみなす
+        }
+      }
+
       const tag = isIncome ? '#入金' : '#支払';
-      const newAccount = '普通預金'; // 回収・支払のデフォルト科目を普通預金にセット
+      const newAccount = '普通預金'; // 回収・支払のデフォルト科目
 
       // 元のメモから既存の #入金 や #支払 を除去してから、新しいタグを付与する
       const cleanMemo = memo ? memo.replace(/#入金|#支払|#決済/g, '').trim() : '';
       const newMemo = `${cleanMemo} (決済) ${tag}`;
 
+      // 💡 修正3: ブロック内の最大 sort_order を取得して順番を壊さないようにする
+      let maxSort = 0;
+      try {
+        const sortRes = db.exec(
+          `SELECT MAX(sort_order) FROM records WHERE parent_id = ${parent_id}`,
+        );
+        if (sortRes.length > 0 && sortRes[0].values[0][0] !== null)
+          maxSort = sortRes[0].values[0][0];
+      } catch (e) {}
+
       insertStmt = db.prepare(
         'INSERT INTO records (parent_id, memo, amount, account, created_at, sort_order) VALUES (?, ?, ?, ?, ?, ?)',
       );
-      insertStmt.run([parent_id, newMemo, amount, newAccount, dateStr, 999]); // 一番下に追加
+      insertStmt.run([parent_id, newMemo, amount, newAccount, dateStr, maxSort + 1]);
 
       const res = db.exec('SELECT last_insert_rowid()');
       const newId = res[0].values[0][0];
@@ -1081,6 +1127,38 @@ function updateRecord(id, field, newValue, element) {
       });
     }
   } else {
+    // 💡 修正2: メモ内にハッシュタグが含まれる場合は、集計や決済行判定が変わるため再描画を行う
+    if (
+      field === 'memo' &&
+      (val.includes('#') ||
+        val.includes('＃') ||
+        (element && (element.innerText.includes('#') || element.innerText.includes('＃'))))
+    ) {
+      renderData();
+
+      if (focusSelector) {
+        requestAnimationFrame(() => {
+          try {
+            const target = document.querySelector(focusSelector);
+            if (target) {
+              target.focus();
+              if (target.hasAttribute('contenteditable')) {
+                const range = document.createRange();
+                const sel = window.getSelection();
+                range.selectNodeContents(target);
+                range.collapse(false);
+                sel.removeAllRanges();
+                sel.addRange(range);
+              }
+            }
+          } catch (e) {
+            console.warn('フォーカスの復元をスキップしました(不正なセレクタ等)', e);
+          }
+        });
+      }
+      return;
+    }
+
     // メモや科目の変更は、すでに画面上の文字（innerText / value）が書き換わっているため、
     // DBへの保存(UPDATE)と setDirty(true) だけで十分。DOMの再構築はスキップし、超速タイピングを邪魔しない。
 
@@ -1352,8 +1430,8 @@ function setActiveQuickPeriodButton(btn, keepYear = false) {
       if (isYearGroup) return; // 年度系ボタンはリセットをスキップ
     }
 
-    b.classList.remove('ring-2', 'ring-primary', 'ring-offset-1'); // 古い仕様の枠線をクリア
-    b.classList.remove('!bg-primary', '!text-white', '!border-primary'); // 色反転をクリア
+    b.classList.remove('ring-2', 'ring-blue-600', 'ring-offset-1'); // 古い仕様の枠線をクリア
+    b.classList.remove('!bg-blue-600', '!text-white', '!border-blue-600'); // 色反転をクリア
 
     const activeClasses = b.getAttribute('data-active-classes');
     if (activeClasses) {
@@ -1676,7 +1754,7 @@ function renderData(focusBlockId = null) {
       const a = document.createElement('a');
       a.href = `#block-${block.id}`;
       a.className =
-        'toc-item block px-2 py-1 hover:text-slate-900 hover:bg-slate-100 rounded truncate transition-colors text-slate-500 cursor-pointer text-sm font-medium';
+        'toc-item block px-2 py-1 hover:text-blue-950 hover:bg-slate-100 rounded truncate transition-colors text-slate-500 cursor-pointer text-sm font-medium';
       a.textContent = block.memo;
       a.title = block.memo;
       a.onclick = (e) => {
@@ -1725,26 +1803,24 @@ function renderData(focusBlockId = null) {
     if (isFilterActive) {
       // フィルター適用時のEmpty State
       emptyHtml = `
-        <div id="empty-state" class="flex flex-col items-center justify-center py-20 px-6 text-center border border-slate-200 rounded-3xl bg-white relative overflow-hidden transition-colors shadow-sm">
-           <!-- 背景の網目パターン -->
-           <div class="absolute inset-0 pointer-events-none opacity-[0.03]" style="background-image: repeating-linear-gradient(45deg, currentColor 0, currentColor 1px, transparent 1px, transparent 8px), repeating-linear-gradient(-45deg, currentColor 0, currentColor 1px, transparent 1px, transparent 8px);"></div>
-           <!-- グラデーション -->
-           <div class="absolute inset-0 pointer-events-none opacity-80 bg-gradient-to-b from-transparent to-white"></div>
+        <div id="empty-state" class="flex flex-col items-center justify-center py-20 px-6 text-center border border-slate-200 rounded-3xl bg-slate-50 relative overflow-hidden transition-colors">
+           <!-- 背景の網目パターンのみを残す（グラデーションdivは削除） -->
+           <div class="absolute inset-0 pointer-events-none opacity-[0.04]" style="background-image: repeating-linear-gradient(45deg, currentColor 0, currentColor 1px, transparent 1px, transparent 8px), repeating-linear-gradient(-45deg, currentColor 0, currentColor 1px, transparent 1px, transparent 8px);"></div>
 
            <div class="relative z-10 flex flex-col items-center">
               <div class="relative flex items-center justify-center mb-6">
-                <div class="absolute w-24 h-24 bg-slate-100 rounded-full"></div>
-                <div class="relative w-16 h-16 bg-slate-200 rounded-full flex items-center justify-center backdrop-blur-sm border border-slate-300">
+                <!-- アイコンの影(shadow-inner)を削除してフラットに -->
+                <div class="relative w-16 h-16 bg-slate-200 rounded-full flex items-center justify-center border border-slate-300">
                   <svg class="w-8 h-8 text-slate-500"><use href="#icon-search"></use></svg>
                 </div>
               </div>
 
-              <h2 class="text-2xl sm:text-3xl font-extrabold text-slate-900 mb-3 tracking-tight">該当する記録がありません</h2>
+              <h2 class="text-2xl sm:text-3xl font-extrabold text-blue-950 mb-3 tracking-tight">該当する記録がありません</h2>
               <p class="text-sm text-slate-500 max-w-sm mx-auto leading-relaxed mb-8">
                 指定された期間（フィルター）にはデータが存在しません。<br>フィルター条件を変更して再度お試しください。
               </p>
 
-              <button onclick="setPeriodFilter('all', null)" class="bg-white border border-slate-200 hover:bg-slate-50 text-slate-700 px-6 py-2.5 rounded-full text-sm font-bold shadow-sm transition-all active:scale-95">
+              <button onclick="setPeriodFilter('all', null)" class="bg-white border border-slate-200 hover:bg-slate-100 text-slate-700 px-6 py-2.5 rounded-full text-sm font-bold shadow-sm transition-all active:scale-95">
                 すべての期間を表示
               </button>
            </div>
@@ -1770,29 +1846,32 @@ function renderData(focusBlockId = null) {
            </div>`;
 
       emptyHtml = `
-        <div id="empty-state" class="flex flex-col items-center justify-center py-20 px-6 text-center border border-slate-200 rounded-3xl bg-white relative overflow-hidden transition-colors shadow-sm">
-           <!-- 背景の網目パターン -->
-           <div class="absolute inset-0 pointer-events-none opacity-[0.03]" style="background-image: repeating-linear-gradient(45deg, currentColor 0, currentColor 1px, transparent 1px, transparent 8px), repeating-linear-gradient(-45deg, currentColor 0, currentColor 1px, transparent 1px, transparent 8px);"></div>
-           <!-- グラデーション -->
-           <div class="absolute inset-0 pointer-events-none opacity-80 bg-gradient-to-b from-transparent to-white"></div>
+        <div id="empty-state" class="flex flex-col items-center justify-center py-20 px-6 text-center border border-slate-200 rounded-3xl bg-slate-50 relative overflow-hidden transition-colors">
+           <!-- 背景の網目パターンのみを残す -->
+           <div class="absolute inset-0 pointer-events-none opacity-[0.04]" style="background-image: repeating-linear-gradient(45deg, currentColor 0, currentColor 1px, transparent 1px, transparent 8px), repeating-linear-gradient(-45deg, currentColor 0, currentColor 1px, transparent 1px, transparent 8px);"></div>
 
            <div class="relative z-10 flex flex-col items-center">
-              <!-- アイコングループ -->
+              <!-- アイコングループを完全にフラット化 -->
               <div class="relative flex items-center justify-center mb-6">
-                <div class="absolute w-24 h-24 bg-blue-50 rounded-full"></div>
-                <div class="relative w-16 h-16 bg-blue-100 rounded-full flex items-center justify-center backdrop-blur-sm border border-blue-200 shadow-inner">
+                <div class="relative w-16 h-16 bg-blue-100 rounded-full flex items-center justify-center border border-blue-200">
                   <svg class="w-8 h-8 text-blue-600"><use href="#icon-money"></use></svg>
                 </div>
               </div>
 
-              <h2 class="text-2xl sm:text-3xl font-extrabold text-slate-900 mb-3 tracking-tight">Welcome to GrindMoney</h2>
+              <h2 class="text-2xl sm:text-3xl font-extrabold text-blue-950 mb-3 tracking-tight">Welcome to GrindMoney</h2>
               <p class="text-sm text-slate-500 max-w-md mx-auto leading-relaxed mb-8">
                 .money ファイルをドラッグ＆ドロップするか、<br>上の入力欄から最初のブロックを作成しましょう。
               </p>
 
-              <button onclick="const el = document.getElementById('new-block-memo'); el.focus(); el.scrollIntoView({behavior: 'smooth', block: 'center'});" class="bg-slate-900 hover:bg-slate-800 text-white px-6 py-3 rounded-full text-sm font-bold shadow-md transition-all active:scale-95 flex items-center gap-2">
-                <span class="text-lg font-light leading-none mb-0.5">+</span> 新しいブロックを作る
-              </button>
+              <!-- ボタンから shadow-blue-500/30 などの光彩を削除し、shadow-sm に統一 -->
+              <div class="flex flex-col sm:flex-row items-center gap-3">
+                <button onclick="const el = document.getElementById('new-block-memo'); el.focus(); el.scrollIntoView({behavior: 'smooth', block: 'center'});" class="bg-blue-600 hover:bg-blue-700 text-white px-6 py-3 rounded-full text-sm font-bold shadow-sm transition-all active:scale-95 flex items-center gap-2">
+                  <span class="text-lg font-light leading-none mb-0.5">+</span> 新しいブロックを作る
+                </button>
+                <button onclick="document.getElementById('csv-input').click()" class="bg-white hover:bg-blue-50 text-blue-700 border border-blue-200 px-6 py-3 rounded-full text-sm font-bold shadow-sm transition-all active:scale-95 flex items-center gap-2">
+                  <svg class="w-4 h-4"><use href="#icon-import"></use></svg> CSVをインポート
+                </button>
+              </div>
 
               <!-- ブラウザ推奨の通知 -->
               ${browserNoticeHtml}
@@ -1881,7 +1960,7 @@ function renderData(focusBlockId = null) {
         a.className =
           'group block px-2 py-1.5 hover:bg-slate-100 rounded transition-colors cursor-pointer flex justify-between items-center';
         a.innerHTML = `
-          <span class="text-sm font-medium text-slate-600 group-hover:text-primary transition-colors truncate">${escapeHtml(tag)}</span>
+          <span class="text-sm font-medium text-slate-600 group-hover:text-blue-600 transition-colors truncate">${escapeHtml(tag)}</span>
           <span class="text-[10px] tabular-nums tracking-tight font-bold text-slate-400 bg-slate-100 px-1.5 py-0.5 rounded group-hover:bg-white transition-colors">¥${data.amount.toLocaleString('ja-JP')}</span>
         `;
         a.onclick = (e) => {
@@ -1949,7 +2028,7 @@ function renderData(focusBlockId = null) {
           const activeToc = document.querySelector(`.toc-item[href="#${entry.target.id}"]`);
           if (activeToc) {
             activeToc.classList.remove('text-slate-500', 'font-medium');
-            activeToc.classList.add('text-primary', 'bg-primary-50', 'font-bold');
+            activeToc.classList.add('text-blue-600', 'bg-blue-50', 'font-bold');
             const tocContainer = document.getElementById('toc-container');
             if (tocContainer && !tocContainer.matches(':hover')) {
               // scrollIntoViewはページ全体のスクロールを阻害してカクつきを生むため、コンテナ内の相対位置で安全にスクロールさせる
@@ -2018,6 +2097,9 @@ function updateOrCreateBlockElement(block, existingEl = null) {
 
   let itemsHtml = '';
   block.children.forEach((item) => {
+    // この行が決済行かどうかを判定
+    const isCollection = (item.memo || '').match(/#入金|#支払|#決済/);
+
     let dateDisp = '';
     let badgeHtml = '';
     let yyyy = today.getFullYear();
@@ -2051,8 +2133,10 @@ function updateOrCreateBlockElement(block, existingEl = null) {
             ' text-red-600 bg-red-50 border-red-200 focus:ring-red-300 hover:bg-red-100 font-bold';
           dateTitle = '未来の日付です（クリックして編集）';
         } else {
-          dateClasses +=
-            ' text-slate-500 bg-slate-100 border-slate-200 focus:ring-blue-200 hover:bg-slate-200';
+          // 決済行の場合は日付の背景色を少し控えめにする
+          dateClasses += isCollection
+            ? ' text-slate-400 bg-transparent border-transparent hover:bg-slate-100'
+            : ' text-slate-500 bg-slate-100 border-slate-200 focus:ring-blue-200 hover:bg-slate-200';
         }
 
         dateDisp = `${badgeHtml}<span data-id="${item.id}" data-field="created_at" data-year="${yyyy}" contenteditable="true" oninput="setDirty(true)" onpaste="handlePlainTextPaste(event)" onkeydown="if(event.key==='Enter' && !event.isComposing){event.preventDefault();this.blur();}" onblur="updateRecord(${item.id}, 'created_at', this.innerText, this)" class="${dateClasses}" title="${dateTitle}">${imm}/${idd}</span>`;
@@ -2060,25 +2144,38 @@ function updateOrCreateBlockElement(block, existingEl = null) {
     }
 
     const accStr = item.account || '';
-    let accountDisp = `<input type="text" data-id="${item.id}" data-field="account" list="account-suggestions" value="${escapeHtml(accStr)}" placeholder="科目" onfocus="this.select()" oninput="setDirty(true)" onkeydown="if(event.key==='Enter' && !event.isComposing){event.preventDefault();this.blur();}" onblur="updateRecord(${item.id}, 'account', this.value, this)" class="text-xs text-blue-600 bg-blue-50 border border-blue-200 px-1.5 py-0.5 rounded mr-2 outline-none focus:ring-2 focus:ring-blue-400 focus:bg-blue-100 cursor-text transition-colors hover:bg-blue-100 w-[84px] sm:w-[100px] shrink-0 text-left placeholder-blue-300">`;
+    // 決済行の場合は科目の色をミュートする
+    const accClasses = isCollection
+      ? 'text-slate-400 bg-transparent border-transparent hover:bg-slate-100 focus:bg-slate-100'
+      : 'text-blue-600 bg-blue-50 border-blue-200 hover:bg-blue-100 focus:bg-blue-100';
+
+    let accountDisp = `<input type="text" data-id="${item.id}" data-field="account" list="account-suggestions" value="${escapeHtml(accStr)}" placeholder="科目" onfocus="this.select()" oninput="setDirty(true)" onkeydown="if(event.key==='Enter' && !event.isComposing){event.preventDefault();this.blur();}" onblur="updateRecord(${item.id}, 'account', this.value, this)" class="text-xs px-1.5 py-0.5 rounded mr-2 outline-none focus:ring-2 focus:ring-blue-400 cursor-text transition-colors w-[84px] sm:w-[100px] shrink-0 text-left placeholder-blue-300 border ${accClasses}">`;
+
+    // 決済ボタンの表示制御（すでに決済済みの行には表示しない）
+    let checkBtnHtml = '';
+    if (!isCollection) {
+      checkBtnHtml = `
+        <button onclick="createCollectionRecord(${item.id})" aria-label="決済(回収・支払)済にする" class="text-slate-300 hover:text-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-200 rounded p-1.5 sm:p-2 -m-1 transition-colors cursor-pointer" title="この取引の「決済行」を自動生成する">
+          <svg class="w-4 h-4 pointer-events-none"><use href="#icon-check-circle"></use></svg>
+        </button>
+      `;
+    }
 
     itemsHtml += `
-      <div class="flex justify-between items-center px-4 sm:px-8 py-3.5 border-b border-slate-50 group/item hover:bg-slate-50/80 transition-colors">
+      <div class="flex justify-between items-center px-4 sm:px-8 py-3 sm:py-3.5 border-b border-slate-50 group/item transition-colors ${isCollection ? 'bg-slate-50/60' : 'hover:bg-slate-50/80'}">
         <div class="flex items-center flex-1 min-w-0">
           ${dateDisp}
           ${accountDisp}
-          <span data-id="${item.id}" data-field="memo" contenteditable="true" oninput="setDirty(true)" onpaste="handlePlainTextPaste(event)" onkeydown="if(event.key==='Enter' && !event.isComposing){event.preventDefault();this.blur();}" onblur="updateRecord(${item.id}, 'memo', this.innerText, this)" class="text-slate-700 font-medium truncate outline-none focus:bg-blue-50 focus:ring-2 focus:ring-blue-200 px-1 rounded cursor-text transition-colors empty:inline-block empty:min-w-12 empty:bg-slate-100 empty:before:content-['✎_未入力'] empty:before:text-slate-400 empty:before:text-xs empty:before:font-normal empty:before:pointer-events-none empty:focus:before:opacity-50">${escapeHtml(item.memo)}</span>
+          <span data-id="${item.id}" data-field="memo" contenteditable="true" oninput="setDirty(true)" onpaste="handlePlainTextPaste(event)" onkeydown="if(event.key==='Enter' && !event.isComposing){event.preventDefault();this.blur();}" onblur="updateRecord(${item.id}, 'memo', this.innerText, this)" class="${isCollection ? 'text-slate-500' : 'text-blue-950'} font-medium truncate outline-none focus:bg-blue-50 focus:ring-2 focus:ring-blue-200 px-1 rounded cursor-text transition-colors empty:inline-block empty:min-w-12 empty:bg-slate-100 empty:before:content-['✎_未入力'] empty:before:text-slate-400 empty:before:text-xs empty:before:font-normal empty:before:pointer-events-none empty:focus:before:opacity-50">${escapeHtml(item.memo)}</span>
         </div>
-        <div class="flex items-center space-x-2 sm:space-x-4 ml-2 sm:ml-auto shrink-0">
-          <input type="text" data-id="${item.id}" data-field="amount" inputmode="decimal" placeholder="0" value="${item.amount !== null && item.amount !== '' && item.amount !== undefined ? item.amount.toLocaleString('ja-JP') : ''}" oninput="setDirty(true)" onfocus="this.select()" onpaste="handlePlainTextPaste(event)" onkeydown="if(event.key==='Enter' && !event.isComposing){event.preventDefault();this.blur();}" onblur="updateRecord(${item.id}, 'amount', this.value, this)" class="bg-transparent border-0 p-0 font-medium tabular-nums tracking-tight text-slate-900 text-right outline-none focus:bg-blue-50 focus:ring-2 focus:ring-blue-200 px-1 rounded cursor-text transition-colors w-[60px] sm:w-[80px]"><span class="text-slate-400 text-xs font-sans">円</span>
-          <div class="flex items-center space-x-1 md:opacity-0 md:group-hover/item:opacity-100 focus-within:opacity-100 transition-opacity">
-            <button onclick="createCollectionRecord(${item.id})" aria-label="決済(回収・支払)済にする" class="text-slate-300 hover:text-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-200 rounded p-2 -m-1 transition-colors cursor-pointer" title="この取引の「決済行」を自動生成する">
-              <svg class="w-4 h-4 pointer-events-none"><use href="#icon-check-circle"></use></svg>
-            </button>
-            <button onclick="duplicateRecord(${item.id})" aria-label="複製" class="text-slate-300 hover:text-primary focus:outline-none focus:ring-2 focus:ring-primary/30 rounded p-2 -m-1 transition-colors cursor-pointer" title="複製">
+        <div class="flex items-center space-x-1.5 sm:space-x-4 ml-2 sm:ml-auto shrink-0">
+          <input type="text" data-id="${item.id}" data-field="amount" inputmode="decimal" placeholder="0" value="${item.amount !== null && item.amount !== '' && item.amount !== undefined ? item.amount.toLocaleString('ja-JP') : ''}" oninput="setDirty(true)" onfocus="this.select()" onpaste="handlePlainTextPaste(event)" onkeydown="if(event.key==='Enter' && !event.isComposing){event.preventDefault();this.blur();}" onblur="updateRecord(${item.id}, 'amount', this.value, this)" class="bg-transparent border-0 p-0 font-medium tabular-nums tracking-tight ${isCollection ? 'text-slate-400' : 'text-blue-950'} text-right outline-none focus:bg-blue-50 focus:ring-2 focus:ring-blue-200 px-1 rounded cursor-text transition-colors w-[50px] sm:w-[80px]"><span class="text-slate-400 text-xs font-sans hidden sm:inline">円</span>
+          <div class="flex items-center space-x-0.5 sm:space-x-1 md:opacity-0 md:group-hover/item:opacity-100 focus-within:opacity-100 transition-opacity">
+            ${checkBtnHtml}
+            <button onclick="duplicateRecord(${item.id})" aria-label="複製" class="text-slate-300 hover:text-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-600/30 rounded p-1.5 sm:p-2 -m-1 transition-colors cursor-pointer" title="複製">
               <svg class="w-4 h-4 pointer-events-none"><use href="#icon-copy"></use></svg>
             </button>
-            <button onclick="deleteRecord(${item.id})" aria-label="削除" class="text-slate-300 hover:text-red-500 focus:outline-none focus:ring-2 focus:ring-red-200 rounded transition-colors text-2xl leading-none p-2 -m-1 cursor-pointer" title="削除">&times;</button>
+            <button onclick="deleteRecord(${item.id})" aria-label="削除" class="text-slate-300 hover:text-red-500 focus:outline-none focus:ring-2 focus:ring-red-200 rounded transition-colors text-xl sm:text-2xl leading-none p-1.5 sm:p-2 -m-1 cursor-pointer" title="削除">&times;</button>
           </div>
         </div>
       </div>
@@ -2123,18 +2220,18 @@ function updateOrCreateBlockElement(block, existingEl = null) {
   }
 
   blockEl.innerHTML = `
-    <button onclick="event.stopPropagation(); saveTemplate(${block.id})" class="absolute -top-3 -left-3 opacity-100 md:opacity-0 group-hover/block:opacity-100 bg-white border border-slate-200 text-slate-400 hover:text-primary hover:border-primary/50 hover:shadow-[0_0_15px_rgba(15,98,254,0.3)] hover:scale-110 p-2 rounded-xl transition-all duration-300 cursor-pointer flex items-center justify-center z-10" title="このブロックをテンプレートとして保存">
+    <button onclick="event.stopPropagation(); saveTemplate(${block.id})" class="absolute -top-3 -left-3 opacity-100 md:opacity-0 group-hover/block:opacity-100 bg-white border border-slate-200 text-slate-400 hover:text-blue-600 hover:border-blue-600/50 hover:shadow-[0_0_15px_rgba(37,99,235,0.3)] hover:scale-110 p-2 rounded-xl transition-all duration-300 cursor-pointer flex items-center justify-center z-10" title="このブロックをテンプレートとして保存">
       <svg class="w-5 h-5"><use href="#icon-squares-plus"></use></svg>
     </button>
     <div class="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden transition-all hover:border-slate-300 hover:shadow-md">
     <div onclick="toggleBlock(${block.id})" class="bg-slate-50/50 px-8 py-5 border-b border-slate-100 flex justify-between items-center transition-colors cursor-pointer select-none group/header hover:bg-slate-100">
       <div class="flex items-center gap-3 overflow-hidden">
         <svg id="block-icon-${block.id}" class="w-5 h-5 text-slate-400 transition-transform duration-200" style="transform: ${iconRotation};"><use href="#icon-chevron-down"></use></svg>
-        <h2 data-id="${block.id}" data-field="memo" contenteditable="true" oninput="setDirty(true)" onpaste="handlePlainTextPaste(event)" onclick="event.stopPropagation()" onkeydown="if(event.key==='Enter' && !event.isComposing){event.preventDefault();this.blur();}" onblur="updateRecord(${block.id}, 'memo', this.innerText, this)" class="text-xl font-extrabold text-slate-900 tracking-tight outline-none focus:bg-white focus:ring-2 focus:ring-primary/30 px-1 rounded cursor-text truncate transition-colors empty:inline-block empty:min-w-20 empty:bg-slate-100 empty:before:content-['✎_タイトル未入力'] empty:before:text-slate-400 empty:before:text-sm empty:before:font-normal empty:before:pointer-events-none empty:focus:before:opacity-50">${escapeHtml(block.memo)}</h2>
+        <h2 data-id="${block.id}" data-field="memo" contenteditable="true" oninput="setDirty(true)" onpaste="handlePlainTextPaste(event)" onclick="event.stopPropagation()" onkeydown="if(event.key==='Enter' && !event.isComposing){event.preventDefault();this.blur();}" onblur="updateRecord(${block.id}, 'memo', this.innerText, this)" class="text-xl font-extrabold text-blue-950 tracking-tight outline-none focus:bg-white focus:ring-2 focus:ring-blue-600/30 px-1 rounded cursor-text truncate transition-colors empty:inline-block empty:min-w-20 empty:bg-slate-100 empty:before:content-['✎_タイトル未入力'] empty:before:text-slate-400 empty:before:text-sm empty:before:font-normal empty:before:pointer-events-none empty:focus:before:opacity-50">${escapeHtml(block.memo)}</h2>
         ${blockBadgeHtml}
       </div>
       <div class="flex items-center shrink-0">
-        <div class="font-bold tabular-nums tracking-tight text-slate-900 text-lg"><span id="block-total-${block.id}">${blockTotal.toLocaleString('ja-JP')}</span> <span class="text-slate-400 text-sm font-sans">円</span></div>
+        <div class="font-bold tabular-nums tracking-tight text-blue-950 text-lg"><span id="block-total-${block.id}">${blockTotal.toLocaleString('ja-JP')}</span> <span class="text-slate-400 text-sm font-sans">円</span></div>
         <div class="flex items-center pl-4 border-l border-slate-200/50 ml-4 shrink-0 h-8">
           <button onclick="event.stopPropagation(); sortBlockByDate(${block.id})" aria-label="日付順に並べ替え" class="w-8 h-8 flex items-center justify-center rounded text-slate-300 hover:bg-slate-100 hover:text-slate-600 md:opacity-0 md:group-hover/block:opacity-100 focus:opacity-100 focus:outline-none focus:ring-2 focus:ring-slate-200 transition-all cursor-pointer mr-1 ${block.children.length < 2 ? 'opacity-30 pointer-events-none md:!opacity-30' : ''}" title="日付の古い順に並べ替える">
             <svg class="w-5 h-5"><use href="#icon-sort"></use></svg>
@@ -2155,10 +2252,10 @@ function updateOrCreateBlockElement(block, existingEl = null) {
         this.querySelector('.item-date').value,
         this.querySelector('.item-account').value
       );">
-        <span class="text-primary text-xl leading-none font-light hidden sm:inline">+</span>
+        <span class="text-blue-600 text-xl leading-none font-light hidden sm:inline">+</span>
 
         <div class="flex items-center gap-2 sm:gap-3 w-full sm:w-auto">
-          <button type="submit" aria-label="明細を追加" class="text-primary bg-primary/10 hover:bg-primary/20 rounded-full w-8 h-8 flex items-center justify-center text-xl leading-none font-light sm:hidden transition-colors outline-none focus:ring-2 focus:ring-primary/50 shrink-0">+</button>
+          <button type="submit" aria-label="明細を追加" class="text-blue-600 bg-blue-600/10 hover:bg-blue-600/20 rounded-full w-8 h-8 flex items-center justify-center text-xl leading-none font-light sm:hidden transition-colors outline-none focus:ring-2 focus:ring-blue-600/50 shrink-0">+</button>
           <div class="flex items-center bg-slate-50 rounded-md px-1 py-1 border border-slate-200 transition-colors">
             <button type="button" onclick="adjustDate(this, -1)" aria-label="1日戻す" class="text-slate-400 hover:text-slate-800 w-8 h-8 flex items-center justify-center font-bold cursor-pointer outline-none transition-colors touch-manipulation" title="-1日">-</button>
             <input type="date" class="${dateInputClass}" value="${defaultDate}" oninput="setDirty(true); checkFutureDate(this)">
@@ -2168,8 +2265,8 @@ function updateOrCreateBlockElement(block, existingEl = null) {
         </div>
 
         <div class="flex items-center gap-2 sm:gap-3 w-full sm:w-auto sm:flex-1 pl-6 sm:pl-0 mt-2 sm:mt-0">
-          <input type="text" placeholder="明細を追加..." list="memo-suggestions" oninput="setDirty(true)" onblur="autoSuggestAccount(this)" onfocus="if(window.innerWidth < 640) { setTimeout(() => this.closest('form').scrollIntoView({ behavior: 'smooth', block: 'center' }), 300); }" onkeydown="if(event.key==='Enter'){ if(event.isComposing){ return; } event.preventDefault();this.closest('form').querySelector('.item-amount').focus();}" class="item-memo bg-transparent border-0 focus:ring-0 p-0 text-slate-900 placeholder-slate-400 flex-1 text-sm font-medium outline-none min-w-[100px]">
-          <input type="text" inputmode="decimal" placeholder="金額(数式OK)" class="item-amount bg-transparent border-0 focus:ring-0 p-0 text-right tabular-nums tracking-tight text-slate-900 placeholder-slate-400 w-24 sm:w-32 shrink-0 text-sm outline-none" style="min-width: 104px;" oninput="setDirty(true)" onfocus="if(window.innerWidth < 640) { setTimeout(() => this.closest('form').scrollIntoView({ behavior: 'smooth', block: 'center' }), 300); }" onkeydown="if(event.key==='Enter' && event.isComposing){ return; } else if(event.key==='Tab' && !event.shiftKey){ event.preventDefault(); this.closest('form').requestSubmit(); }" title="数式計算（+ - * /）が使えます">
+          <input type="text" placeholder="明細を追加..." list="memo-suggestions" oninput="setDirty(true)" onblur="autoSuggestAccount(this)" onfocus="if(window.innerWidth < 640) { setTimeout(() => this.closest('form').scrollIntoView({ behavior: 'smooth', block: 'center' }), 300); }" onkeydown="if(event.key==='Enter'){ if(event.isComposing){ return; } event.preventDefault();this.closest('form').querySelector('.item-amount').focus();}" class="item-memo bg-transparent border-0 focus:ring-0 p-0 text-blue-950 placeholder-slate-400 flex-1 text-sm font-medium outline-none min-w-[100px]">
+          <input type="text" inputmode="decimal" placeholder="金額(数式OK)" class="item-amount bg-transparent border-0 focus:ring-0 p-0 text-right tabular-nums tracking-tight text-blue-950 placeholder-slate-400 w-24 sm:w-32 shrink-0 text-sm outline-none" style="min-width: 104px;" oninput="setDirty(true)" onfocus="if(window.innerWidth < 640) { setTimeout(() => this.closest('form').scrollIntoView({ behavior: 'smooth', block: 'center' }), 300); }" onkeydown="if(event.key==='Enter' && event.isComposing){ return; } else if(event.key==='Tab' && !event.shiftKey){ event.preventDefault(); this.closest('form').requestSubmit(); }" title="数式計算（+ - * /）が使えます">
         </div>
         <button type="submit" class="hidden">追加</button>
       </form>
@@ -2827,6 +2924,7 @@ function exportCSV(format = 'yayoi') {
 
   let query = `SELECT c.id,
     CASE
+      WHEN p.memo = 'CSVインポート' OR p.memo IS NULL OR p.memo = '' THEN COALESCE(c.memo, '')
       WHEN c.memo IS NOT NULL AND c.memo != '' THEN COALESCE(p.memo, '') || ' - ' || c.memo
       ELSE COALESCE(p.memo, '')
     END AS memo,
@@ -2873,127 +2971,12 @@ function exportCSV(format = 'yayoi') {
 
   const includeCollection = document.getElementById('export-collections')?.checked;
 
-  // フリーウェイ経理用 科目コード（数字）マッピング
-  const freewayCodeMap = {
-    現金: '1100',
-    当座預金: '1110',
-    普通預金: '1120',
-    定期預金: '1130',
-    受取手形: '1150',
-    売掛金: '1160',
-    有価証券: '1170',
-    商品: '1210',
-    貯蔵品: '1270',
-    前渡金: '1410',
-    前払金: '1410',
-    立替金: '1411',
-    仮払金: '1412',
-    前払費用: '1420',
-    未収収益: '1430',
-    短期貸付金: '1440',
-    未収入金: '1450',
-    仮払消費税: '1500',
-    建物: '2110',
-    構築物: '2120',
-    機械装置: '2130',
-    車両運搬具: '2150',
-    工具器具備品: '2160',
-    一括償却資産: '2170',
-    土地: '2210',
-    ソフトウェア: '2350',
-    出資金: '2620',
-    長期貸付金: '2630',
-    長期前払費用: '2810',
-    創立費: '3110',
-    開業費: '3120',
-    事業主貸: '3180',
-    店主貸: '3180',
-    支払手形: '4110',
-    買掛金: '4120',
-    短期借入金: '4130',
-    未払金: '4140',
-    未払費用: '4150',
-    前受金: '4160',
-    預り金: '4170',
-    未払法人税等: '4180',
-    未払消費税等: '4182',
-    仮受金: '4190',
-    前受収益: '4210',
-    賞与引当金: '4350',
-    仮受消費税: '4500',
-    長期借入金: '5110',
-    退職給与引当金: '5310',
-    資本金: '7110',
-    資本準備金: '7210',
-    利益準備金: '7310',
-    事業主借: '7320',
-    店主借: '7320',
-    元入金: '7330',
-    繰越利益剰余金: '7330',
-    売上高: '8000',
-    売上値引戻り高: '8050',
-    期首商品棚卸高: '8100',
-    当期仕入高: '8110',
-    仕入値引戻し高: '8150',
-    期末棚卸高: '8190',
-    給料手当: '8310',
-    給与手当: '8310',
-    役員報酬: '8310',
-    賞与: '8327',
-    退職金: '8330',
-    法定福利費: '8350',
-    福利厚生費: '8351',
-    外注工賃: '8352',
-    外注費: '8352',
-    旅費交通費: '8410',
-    通信費: '8420',
-    運賃: '8421',
-    荷造運賃: '8421',
-    車両費: '8430',
-    交際費: '8440',
-    接待交際費: '8440',
-    諸会費: '8441',
-    寄付金: '8442',
-    広告宣伝費: '8450',
-    会議費: '8460',
-    賃借料: '8510',
-    地代家賃: '8511',
-    地代: '8511',
-    家賃: '8512',
-    保険料: '8520',
-    損害保険料: '8520',
-    修繕費: '8530',
-    水道光熱費: '8540',
-    消耗品費: '8550',
-    事務用消耗品: '8550',
-    新聞図書費: '8560',
-    租税公課: '8570',
-    販売手数料: '8580',
-    支払手数料: '8581',
-    貸倒損失: '8590',
-    貸倒金: '8590',
-    減価償却費: '8592',
-    雑費: '8599',
-    受取利息: '8610',
-    受取配当金: '8620',
-    雑収入: '8790',
-    支払利息割引料: '8810',
-    支払利息: '8810',
-    利子割引料: '8810',
-    雑損失: '8990',
-    専従者給与: '9810',
-    リース料: '8510',
-    役員借入金: '5110',
-    役員貸付金: '2630',
-    前払前渡金: '1410',
-  };
-
   values.forEach((row) => {
     const id = row[0];
     const memo = row[1] ? row[1].toString() : '';
     const rawAmount = parseInt(row[2] || 0, 10);
     const absAmount = Math.abs(rawAmount); // 複式簿記のためマイナスを絶対値に変換
-    const isIncome = rawAmount >= 0; // プラスなら売上系、マイナスなら経費・支払系
+    let isIncome = rawAmount >= 0;
     const account = row[4] ? row[4].toString() : '雑費';
     const escapedMemo = sanitizeCsvCell(memo);
 
@@ -3003,27 +2986,59 @@ function exportCSV(format = 'yayoi') {
     // 「自動連携しているため決済行は出力しない」設定の場合はスキップ
     if (isCollection && !includeCollection) return;
 
+    // 🚨 デグレ修正: プラス入力された「費用」や「資産」を支出として扱うスマート反転
+    const acctCode = FREEWAY_CODE_MAP[account] || '';
+    if (
+      isIncome &&
+      account !== '売上高' &&
+      account !== '雑収入' &&
+      account !== '売掛金' &&
+      account !== '未収入金' &&
+      account !== '前受金'
+    ) {
+      if (
+        acctCode.startsWith('8') ||
+        acctCode.startsWith('1') ||
+        acctCode.startsWith('2') ||
+        acctCode.startsWith('3')
+      ) {
+        isIncome = false; // 実質的な出金（経費や資産の購入）とみなす
+      }
+    }
+
     // 🌟 最終調整：空気を読む自動仕訳ロジック
     let debitAcc, creditAcc;
 
     if (!isCollection) {
       // --- パターンA: 発生行 ---
-      // 収入は「売掛金」、経費は「現金」を基本の相手科目にする
+      // 収入は「売掛金」、経費は「現金」をデフォルトの相手科目にする
       let partnerAcc = isIncome ? '売掛金' : '現金';
 
-      // メモに特定のタグがあれば、相手科目を上書き（クレカ払い等に対応）
+      // メモに特定のタグがあれば、相手科目を上書き
       if (memo.includes('#現金')) partnerAcc = '現金';
       else if (memo.includes('#預金') || memo.includes('#振込')) partnerAcc = '普通預金';
-      else if (memo.includes('#クレカ') || memo.includes('#カード') || memo.includes('#未払'))
+      else if (
+        memo.includes('#クレカ') ||
+        memo.includes('#カード') ||
+        memo.includes('#未払') ||
+        memo.toUpperCase().includes('AMEX') ||
+        memo.includes('楽天')
+      )
         partnerAcc = '未払金';
       else if (memo.includes('#掛')) partnerAcc = isIncome ? '売掛金' : '買掛金';
+      else if (account === '売掛金' || account === '買掛金') partnerAcc = '普通預金'; // 掛金のデフォルト相手科目
 
       if (isIncome) {
-        debitAcc = partnerAcc; // [借] 売掛金 / 現金 / 普通預金
-        creditAcc = account; // [貸] 売上高 など
+        debitAcc = partnerAcc;
+        creditAcc = account;
+        // 🚨 デグレ修正: 売掛金発生の特例
+        if (account === '売掛金') {
+          debitAcc = '売掛金';
+          creditAcc = '売上高';
+        }
       } else {
-        debitAcc = account; // [借] 消耗品費 など
-        creditAcc = partnerAcc; // [貸] 現金 / 未払金
+        debitAcc = account;
+        creditAcc = partnerAcc;
       }
     } else {
       // --- パターンB: 決済（回収・支払）行 ---
@@ -3033,6 +3048,15 @@ function exportCSV(format = 'yayoi') {
       } else {
         debitAcc = '未払金'; // [借] 未払金（消込）
         creditAcc = account; // [貸] 普通預金 など
+      }
+    }
+
+    // 🚨 デグレ修正: 借方貸方が一致してしまった場合のフェイルセーフ
+    if (debitAcc === creditAcc) {
+      if (isIncome) {
+        creditAcc = '仮受金'; // 理由不明な入金として逃がす
+      } else {
+        debitAcc = '仮払金'; // 理由不明な出金として逃がす
       }
     }
 
@@ -3096,8 +3120,8 @@ function exportCSV(format = 'yayoi') {
       let cols = Array(17).fill('');
       cols[0] = id.toString(); // 伝票No (数値として出力)
       cols[3] = fwDate; // 日付 (数値的文字列として出力)
-      cols[5] = freewayCodeMap[debitAcc] || '000'; // 借方科目コード
-      cols[8] = freewayCodeMap[creditAcc] || '000'; // 貸方科目コード
+      cols[5] = FREEWAY_CODE_MAP[debitAcc] || '000'; // 借方科目コード
+      cols[8] = FREEWAY_CODE_MAP[creditAcc] || '000'; // 貸方科目コード
       cols[10] = absAmount.toString();
       cols[11] = escapedMemo;
       cols[12] = '0';
@@ -3290,6 +3314,25 @@ function updateCSVPreview() {
   if (mapAccount && mapAccount.selectedIndex < 1 && maxCols >= 4) mapAccount.value = '3'; // 4列以上あれば適当に
   if (mapMemo.selectedIndex < 1 && maxCols >= 2) mapMemo.value = '1';
   if (mapAmount.selectedIndex < 1 && maxCols >= 3) mapAmount.value = '2';
+  // --- 💡 God-Rank: ヘッダー文字からの自動マッピング推論 ---
+  if (mapDate.selectedIndex < 1) {
+    const dateIdx = firstRow.findIndex((c) => c && c.match(/日|date/i));
+    mapDate.value = dateIdx !== -1 ? dateIdx.toString() : maxCols >= 1 ? '0' : '-1';
+  }
+  if (mapAccount && mapAccount.selectedIndex < 1) {
+    const accIdx = firstRow.findIndex((c) => c && c.match(/科目|account/i));
+    mapAccount.value = accIdx !== -1 ? accIdx.toString() : '-1';
+  }
+  if (mapMemo.selectedIndex < 1) {
+    const memoIdx = firstRow.findIndex(
+      (c) => c && c.match(/摘要|メモ|内容|店名|利用先|memo|description/i),
+    );
+    mapMemo.value = memoIdx !== -1 ? memoIdx.toString() : maxCols >= 2 ? '1' : '-1';
+  }
+  if (mapAmount.selectedIndex < 1) {
+    const amountIdx = firstRow.findIndex((c) => c && c.match(/金額|支払|出金|入金|利用額|amount/i));
+    mapAmount.value = amountIdx !== -1 ? amountIdx.toString() : maxCols >= 3 ? '2' : '-1';
+  }
 
   renderCSVPreview();
 }
@@ -3355,7 +3398,7 @@ function renderCSVPreview() {
       // マッピングされている列はハイライト
       let highlightClass = '';
       if (i === mapDate || i === mapAccount || i === mapMemo || i === mapAmount) {
-        highlightClass = 'text-slate-900 font-medium bg-slate-50/50';
+        highlightClass = 'text-blue-950 font-medium bg-slate-50/50';
       }
 
       tdHtml += `<td class="px-3 py-2 truncate max-w-[150px] ${highlightClass}" title="${escapeHtml(val)}">${escapeHtml(displayVal)}</td>`;
@@ -3863,12 +3906,12 @@ function renderCommandList(query = '') {
   filtered.forEach((cmd, i) => {
     const div = document.createElement('div');
     const isSelected = i === selectedCommandIndex;
-    div.className = `px-4 py-3 my-1 flex justify-between items-center rounded-md cursor-pointer transition-colors ${isSelected ? 'bg-primary-50 text-primary' : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'}`;
+    div.className = `px-4 py-3 my-1 flex justify-between items-center rounded-md cursor-pointer transition-colors ${isSelected ? 'bg-blue-50 text-blue-600' : 'text-slate-600 hover:bg-slate-100 hover:text-blue-950'}`;
 
     let innerHtml = `<div class="flex items-center gap-3"><span class="text-xl">${cmd.icon}</span><span class="font-medium tracking-wide">${cmd.title}</span></div>`;
     if (cmd.shortcut) {
       // コマンドが選択されている時はバッジの色も少し強調する
-      innerHtml += `<kbd class="font-mono text-[10px] bg-white border border-slate-200 px-1.5 py-0.5 rounded shadow-sm ${isSelected ? 'text-primary border-primary/20' : 'text-slate-400'}">${cmd.shortcut}</kbd>`;
+      innerHtml += `<kbd class="font-mono text-[10px] bg-white border border-slate-200 px-1.5 py-0.5 rounded shadow-sm ${isSelected ? 'text-blue-600 border-blue-600/20' : 'text-slate-400'}">${cmd.shortcut}</kbd>`;
     }
     div.innerHTML = innerHtml;
 
@@ -3923,8 +3966,17 @@ document.addEventListener('keydown', (e) => {
 
   if (e.key === 'Escape') {
     // モーダルやパレットが開いていれば閉じる
+    // 💡 God-Rank: 2段階クローズ（文字がある場合はクリア、空なら閉じる）
     if (isCommandPaletteOpen) {
       toggleCommandPalette();
+      const input = document.getElementById('cmd-input');
+      if (input.value !== '') {
+        input.value = '';
+        selectedCommandIndex = 0;
+        renderCommandList('');
+      } else {
+        toggleCommandPalette();
+      }
       return;
     }
     if (!document.getElementById('csv-mapping-modal').classList.contains('hidden')) {
@@ -4143,6 +4195,120 @@ const accountDictionaries = {
   freeway: baseAccountingDict,
 };
 
+const FREEWAY_CODE_MAP = {
+  現金: '1100',
+  当座預金: '1110',
+  普通預金: '1120',
+  定期預金: '1130',
+  受取手形: '1150',
+  売掛金: '1160',
+  有価証券: '1170',
+  商品: '1210',
+  貯蔵品: '1270',
+  前渡金: '1410',
+  前払金: '1410',
+  立替金: '1411',
+  仮払金: '1412',
+  前払費用: '1420',
+  未収収益: '1430',
+  短期貸付金: '1440',
+  未収入金: '1450',
+  仮払消費税: '1500',
+  建物: '2110',
+  構築物: '2120',
+  機械装置: '2130',
+  車両運搬具: '2150',
+  工具器具備品: '2160',
+  一括償却資産: '2170',
+  土地: '2210',
+  ソフトウェア: '2350',
+  出資金: '2620',
+  長期貸付金: '2630',
+  長期前払費用: '2810',
+  創立費: '3110',
+  開業費: '3120',
+  事業主貸: '3180',
+  店主貸: '3180',
+  支払手形: '4110',
+  買掛金: '4120',
+  短期借入金: '4130',
+  未払金: '4140',
+  未払費用: '4150',
+  前受金: '4160',
+  預り金: '4170',
+  未払法人税等: '4180',
+  未払消費税等: '4182',
+  仮受金: '4190',
+  前受収益: '4210',
+  賞与引当金: '4350',
+  仮受消費税: '4500',
+  長期借入金: '5110',
+  退職給与引当金: '5310',
+  資本金: '7110',
+  資本準備金: '7210',
+  利益準備金: '7310',
+  事業主借: '7320',
+  店主借: '7320',
+  元入金: '7330',
+  繰越利益剰余金: '7330',
+  売上高: '8000',
+  売上値引戻り高: '8050',
+  期首商品棚卸高: '8100',
+  当期仕入高: '8110',
+  仕入値引戻し高: '8150',
+  期末棚卸高: '8190',
+  給料手当: '8310',
+  給与手当: '8310',
+  役員報酬: '8310',
+  賞与: '8327',
+  退職金: '8330',
+  法定福利費: '8350',
+  福利厚生費: '8351',
+  外注工賃: '8352',
+  外注費: '8352',
+  旅費交通費: '8410',
+  通信費: '8420',
+  運賃: '8421',
+  荷造運賃: '8421',
+  車両費: '8430',
+  交際費: '8440',
+  接待交際費: '8440',
+  諸会費: '8441',
+  寄付金: '8442',
+  広告宣伝費: '8450',
+  会議費: '8460',
+  賃借料: '8510',
+  地代家賃: '8511',
+  地代: '8511',
+  家賃: '8512',
+  保険料: '8520',
+  損害保険料: '8520',
+  修繕費: '8530',
+  水道光熱費: '8540',
+  消耗品費: '8550',
+  事務用消耗品: '8550',
+  新聞図書費: '8560',
+  租税公課: '8570',
+  販売手数料: '8580',
+  支払手数料: '8581',
+  貸倒損失: '8590',
+  貸倒金: '8590',
+  減価償却費: '8592',
+  雑費: '8599',
+  受取利息: '8610',
+  受取配当金: '8620',
+  雑収入: '8790',
+  支払利息割引料: '8810',
+  支払利息: '8810',
+  利子割引料: '8810',
+  雑損失: '8990',
+  専従者給与: '9810',
+  リース料: '8510',
+  役員借入金: '5110',
+  役員貸付金: '2630',
+  前払前渡金: '1410',
+};
+
 function changeAccountDict() {
   const select = document.getElementById('dict-select');
   const dictKey = select.value;
@@ -4352,6 +4518,8 @@ function setAllCustomAccountsHidden(isHidden) {
 function showTagModal(tag, data) {
   const modal = document.getElementById('tag-modal');
   document.getElementById('tag-modal-title').textContent = tag;
+  // 💡 God-Rank: タグ名の横に (全○件) と表示して分析しやすくする
+  document.getElementById('tag-modal-title').textContent = `${tag} (${data.items.length}件)`;
   document.getElementById('tag-modal-total').textContent =
     '¥' + data.amount.toLocaleString('ja-JP');
 
