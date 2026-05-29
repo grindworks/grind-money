@@ -879,13 +879,19 @@ window.createCollectionRecord = function (id) {
 
       // 💡 修正3: ブロック内の最大 sort_order を取得して順番を壊さないようにする
       let maxSort = 0;
+      let sortStmt = null;
       try {
-        const sortRes = db.exec(
-          `SELECT MAX(sort_order) FROM records WHERE parent_id = ${parent_id}`,
-        );
-        if (sortRes.length > 0 && sortRes[0].values[0][0] !== null)
-          maxSort = sortRes[0].values[0][0];
-      } catch (e) {}
+        sortStmt = db.prepare('SELECT MAX(sort_order) FROM records WHERE parent_id = ?');
+        sortStmt.bind([parent_id]);
+        if (sortStmt.step()) {
+          const val = sortStmt.get()[0];
+          if (val !== null) maxSort = val;
+        }
+      } catch (e) {
+        console.warn('ソート順の取得に失敗しました', e);
+      } finally {
+        if (sortStmt) sortStmt.free();
+      }
 
       insertStmt = db.prepare(
         'INSERT INTO records (parent_id, memo, amount, account, created_at, sort_order) VALUES (?, ?, ?, ?, ?, ?)',
@@ -1804,8 +1810,9 @@ function renderData(focusBlockId = null) {
       // フィルター適用時のEmpty State
       emptyHtml = `
         <div id="empty-state" class="flex flex-col items-center justify-center py-20 px-6 text-center border border-slate-200 rounded-3xl bg-slate-50 relative overflow-hidden transition-colors">
-           <!-- 背景の網目パターンのみを残す（グラデーションdivは削除） -->
-           <div class="absolute inset-0 pointer-events-none opacity-[0.04]" style="background-image: repeating-linear-gradient(45deg, currentColor 0, currentColor 1px, transparent 1px, transparent 8px), repeating-linear-gradient(-45deg, currentColor 0, currentColor 1px, transparent 1px, transparent 8px);"></div>
+           <!-- 洗練された方眼紙（グリッド）パターン背景 -->
+           <div class="absolute inset-0 pointer-events-none" style="background-image: linear-gradient(to right, #e2e8f0 1px, transparent 1px), linear-gradient(to bottom, #e2e8f0 1px, transparent 1px); background-size: 24px 24px; opacity: 0.6;"></div>
+           <div class="absolute inset-0 pointer-events-none bg-gradient-to-b from-slate-50 via-transparent to-slate-50 opacity-80"></div>
 
            <div class="relative z-10 flex flex-col items-center">
               <div class="relative flex items-center justify-center mb-6">
@@ -1847,8 +1854,9 @@ function renderData(focusBlockId = null) {
 
       emptyHtml = `
         <div id="empty-state" class="flex flex-col items-center justify-center py-20 px-6 text-center border border-slate-200 rounded-3xl bg-slate-50 relative overflow-hidden transition-colors">
-           <!-- 背景の網目パターンのみを残す -->
-           <div class="absolute inset-0 pointer-events-none opacity-[0.04]" style="background-image: repeating-linear-gradient(45deg, currentColor 0, currentColor 1px, transparent 1px, transparent 8px), repeating-linear-gradient(-45deg, currentColor 0, currentColor 1px, transparent 1px, transparent 8px);"></div>
+           <!-- 洗練された方眼紙（グリッド）パターン背景 -->
+           <div class="absolute inset-0 pointer-events-none" style="background-image: linear-gradient(to right, #e2e8f0 1px, transparent 1px), linear-gradient(to bottom, #e2e8f0 1px, transparent 1px); background-size: 24px 24px; opacity: 0.6;"></div>
+           <div class="absolute inset-0 pointer-events-none bg-gradient-to-b from-slate-50 via-transparent to-slate-50 opacity-80"></div>
 
            <div class="relative z-10 flex flex-col items-center">
               <!-- アイコングループを完全にフラット化 -->
@@ -3487,9 +3495,12 @@ function executeCSVImport() {
       const accountStr =
         mapAccount !== -1 && cols[mapAccount] !== undefined ? cols[mapAccount].trim() : '';
       const memo = mapMemo !== -1 && cols[mapMemo] !== undefined ? cols[mapMemo].trim() : '';
+
       // "¥1,500" のようなカンマや記号付き金額もパースできるように数字とマイナス以外を除去
       // 日本の銀行CSVでよく使われる「△」をマイナスとして処理する
-      const rawAmount = mapAmount !== -1 && cols[mapAmount] !== undefined ? cols[mapAmount] : '';
+      // 将来的にパーサーが数値を返した場合の TypeError を防ぐため、明示的に String にキャスト
+      const rawAmount =
+        mapAmount !== -1 && cols[mapAmount] !== undefined ? String(cols[mapAmount]) : '';
 
       // まず全角数字・全角マイナス等を半角に変換
       let normalizedAmount = rawAmount

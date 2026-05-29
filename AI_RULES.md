@@ -20,15 +20,22 @@
   - Assume files selected by the user might be corrupted or manipulated. Always wrap decryption and JSON/CSV parsing in robust `try...catch` blocks.
   - Fail gracefully with user-friendly `alert` or toast notifications, allowing the user to retry without reloading the app.
 
-## 3. Frontend (S-Rank UI & Hacker Aesthetic)
+## 3. Frontend (S-Rank UI & SaaS-like Flat Design)
 
 - **Tailwind CSS:** Use Tailwind utility classes for all styling. Avoid custom CSS in `<style>` blocks unless absolutely necessary.
+- **Design System & Tone & Manner:**
+  - **SaaS-like Flat Design:** Maintain a clean, professional, and modern flat design.
+  - **Color Palette (Strictly Tailwind Default):** Do NOT use custom colors like `primary`. Strictly use Tailwind's default color palette to ensure 100% consistency.
+    - **Main Text & Headings:** Deep intellectual navy (`text-blue-950`).
+    - **Buttons, Accents & Focus Rings:** Solid blue (`blue-600` / `bg-blue-600` / `focus:ring-blue-600`).
+    - **Toast/System Notifications:** Deep dark slate (`bg-slate-900`) for a stable, professional look.
+    - **Backgrounds:** Use subtle slate tones (`bg-slate-50`, `bg-slate-100`) and refined grid patterns for empty states.
 - **Icons (Inline SVG Sprites):** Load icons strictly via inline SVG `<use href="#icon-name"></use>`. **NEVER** use external files like `sprite.svg` or icon fonts, as they break when the PWA is offline.
 - **Micro-Interactions & UX:**
   - Enhance the "Grind (fast input)" experience. Ensure form submissions do not cause page reloads (`event.preventDefault()`).
   - Maintain focus on input fields programmatically after actions.
-  - Ensure UI transitions do not cause layout shifts (CLS). Use `@formkit/auto-animate` for smooth DOM insertions/deletions.
-- **Minimalist Hacker Vibe:** Keep the UI clean. Hide complex actions in the Command Palette (`Cmd+K`).
+  - Ensure UI transitions do not cause layout shifts (CLS). Use smooth CSS animations or View Transitions where appropriate.
+- **Minimalist Vibe:** Keep the UI clean. Hide complex actions in the Command Palette (`Cmd+K`).
 
 ## 4. AI Directives
 
