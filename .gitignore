@@ -17,3 +17,5 @@ build.sh
 
 # Node modules
 node_modules/
+
+AI_RULES.md
