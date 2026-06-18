@@ -10,6 +10,9 @@
   <!-- OSのステータスバー色 -->
   <meta id="meta-theme-color" name="theme-color" content="#f8fafc">
 
+  <!-- Content Security Policy (CSP) -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval' 'unsafe-eval' https://cdnjs.cloudflare.com https://grindsite.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; connect-src 'self' https://cdnjs.cloudflare.com ws://127.0.0.1:* ws://localhost:* wss://127.0.0.1:* wss://localhost:*; object-src 'none'; base-uri 'none';">
+
   <!-- Google Fonts (Inter + Noto Sans JP) -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -32,10 +35,13 @@
 
   <!-- iOS用 ホーム画面アイコン -->
   <link rel="apple-touch-icon" href="icon-192.png">
+
+  <!-- Global Footer Script -->
+  <script src="https://grindsite.com/tools/footer.js" defer></script>
 </head>
 
 <body
-  class="bg-slate-50 selection:bg-blue-600/30 min-h-screen overscroll-none font-sans text-slate-900 antialiased transition-colors duration-300"
+  class="bg-slate-50 selection:bg-blue-600/30 min-h-[100dvh] overscroll-none font-sans text-slate-900 antialiased transition-colors duration-300"
   style="scrollbar-gutter: stable; overscroll-behavior: none;">
 
   <!-- SVG Sprite (Heroicons) -->
@@ -187,10 +193,12 @@
           </select>
 
           <!-- 暗号化パスワード入力 -->
-          <div class="relative flex items-center">
+          <form class="relative flex items-center" onsubmit="event.preventDefault(); saveGrindFile();">
+            <!-- アクセシビリティとパスワードマネージャーの警告回避のための隠しユーザー名フィールド -->
+            <input type="text" name="username" autocomplete="username" class="hidden" aria-hidden="true" value="grindmoney-user">
             <label for="file-password" class="sr-only">暗号化パスワード</label>
             <input type="password" id="file-password" placeholder="暗号化パスワード..." autocomplete="new-password"
-              data-lpignore="true" onkeydown="if(event.key==='Enter'){ event.preventDefault(); saveGrindFile(); }"
+              data-lpignore="true"
               class="bg-white shadow-sm py-2 pr-8 pl-3 border border-slate-200 focus:border-blue-600 rounded-md outline-none w-36 text-blue-950 text-sm transition-all placeholder-slate-400"
               title="パスワードを入力すると保存時にファイルを強力に暗号化します">
             <button type="button" onclick="togglePasswordVisibility()"
@@ -202,7 +210,7 @@
                 <use href="#icon-eye-slash"></use>
               </svg>
             </button>
-          </div>
+          </form>
 
           <button onclick="loadGrindFile()"
             class="bg-white hover:bg-slate-100 shadow-sm px-3 py-2 border border-slate-200 rounded-md font-medium text-slate-600 hover:text-blue-950 text-sm transition-colors cursor-pointer shrink-0"
@@ -256,7 +264,7 @@
       <div id="app-ui" class="hidden">
         <!-- 総合計金額表示 (Sticky + Backdrop Blur) -->
         <div
-          class="top-0 z-40 sm:sticky flex flex-col gap-3 bg-white/70 backdrop-blur-2xl -mx-6 mb-10 px-6 pt-6 pb-4 border-slate-200/50 border-b transition-colors relative">
+          class="top-0 z-40 sticky flex flex-col gap-3 bg-white/70 backdrop-blur-2xl -mx-6 mb-10 px-6 pt-6 pb-4 border-slate-200/50 border-b transition-colors">
 
           <!-- 追加: スクロール追従型のミニ保存ボタン (未保存時のみ表示) -->
           <button onclick="saveGrindFile()" id="floating-save-btn"
@@ -386,6 +394,9 @@
         <button onclick="location.reload()"
           class="bg-blue-600 hover:bg-blue-700 shadow-sm px-6 py-3 rounded-lg font-bold text-white active:scale-95 transition-all">ページを再読み込み</button>
       </div>
+
+      <!-- Global Footer Placeholder -->
+      <div id="grind-global-footer" class="mt-16 w-full opacity-80 hover:opacity-100 transition-opacity"></div>
 
       <!-- 右側の余白（メインコンテンツを画面中央に維持するためのダミー） -->
       <div class="hidden xl:block w-56 shrink-0"></div>
@@ -533,7 +544,7 @@
               class="text-slate-400 hover:text-slate-600 text-3xl leading-none transition-colors">&times;</button>
           </div>
         </div>
-        <div class="p-0 overflow-y-auto">
+        <div class="p-0 overflow-y-auto flex-1 min-h-0">
           <table class="w-full text-sm text-left">
             <tbody id="tag-modal-body" class="divide-y divide-slate-100">
               <!-- JSで動的生成 -->
@@ -593,12 +604,14 @@
         <div class="px-6 py-5 border-slate-100 border-b">
           <h3 class="font-bold text-blue-950 text-lg">パスワードの入力</h3>
         </div>
-        <div class="space-y-4 px-6 py-6">
+        <form class="space-y-4 px-6 py-6" onsubmit="event.preventDefault();">
           <p id="password-prompt-message" class="text-slate-600 text-sm">ファイルは暗号化されています。解除パスワードを入力してください:</p>
+          <!-- アクセシビリティとパスワードマネージャーの警告回避のための隠しユーザー名フィールド -->
+          <input type="text" name="username" autocomplete="username" class="hidden" aria-hidden="true" value="grindmoney-user">
           <input type="password" id="password-prompt-input"
             class="bg-slate-50 px-4 py-2 border border-slate-200 focus:border-blue-600 rounded-md outline-none w-full text-blue-950 text-lg"
             autocomplete="new-password" data-lpignore="true">
-        </div>
+        </form>
         <div class="flex justify-end space-x-3 bg-slate-50 px-6 py-4 border-slate-100 border-t">
           <button id="password-prompt-cancel"
             class="hover:bg-slate-200 px-4 py-2 rounded-md font-medium text-slate-600 text-sm transition-colors">キャンセル</button>

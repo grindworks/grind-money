@@ -1,5 +1,5 @@
 // 💡 アップデート時はここを v2, v3... と書き換えることで更新が発火します
-const CACHE_NAME = 'grindmoney-v54';
+const CACHE_NAME = 'grindmoney-v20260618-1';
 const urlsToCache = [
   './',
   './index.html',
@@ -12,6 +12,7 @@ const urlsToCache = [
 const externalUrlsToCache = [
   'https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.8.0/sql-wasm.js',
   'https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.8.0/sql-wasm.wasm',
+  'https://grindsite.com/tools/footer.js'
 ];
 
 // インストール時にキャッシュを作成
@@ -26,17 +27,25 @@ self.addEventListener('install', (event) => {
       // 外部CDNファイルはCORS対応のため cors で個別に追加
       for (const url of externalUrlsToCache) {
         try {
-          const request = new Request(url, { mode: 'cors' });
-          const response = await fetch(request);
-          // 404エラーなどで壊れたキャッシュを保存しないための防波堤
-          if (response.ok) {
+          // まずCORSモードで取得を試みる
+          let request = new Request(url, { mode: 'cors' });
+          let response;
+          try {
+            response = await fetch(request);
+          } catch (e) {
+            // CORSエラーなどで弾かれた場合は、no-corsモードで不透明(Opaque)レスポンスとして取得
+            request = new Request(url, { mode: 'no-cors' });
+            response = await fetch(request);
+          }
+          // 正常なレスポンス、または不透明レスポンス(type === 'opaque')の場合はキャッシュする
+          if (response.ok || response.type === 'opaque') {
             await cache.put(request, response);
           } else {
-            throw new Error(`Critical asset fetch failed: ${response.status} for ${url}`);
+            throw new Error(`Asset fetch failed: ${response.status} for ${url}`);
           }
         } catch (error) {
-          console.error('外部リソースのキャッシュに失敗しました:', url, error);
-          throw error; // コアリソースの失敗はインストール全体を中断（失敗）させる
+          console.warn('外部リソースのキャッシュをスキップしました:', url, error);
+          // 外部リソースの失敗でService Worker全体のインストールが中断しないよう、throwしない
         }
       }
     }),

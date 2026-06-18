@@ -12,11 +12,14 @@ let totalAnimationId = null; // アニメーションの多重起動防止用ID
 let draftTimer = null; // ドラフト自動保存用タイマー
 let statusTimeoutId = null; // ステータスバー通知のタイマーID
 let isSaving = false; // 保存処理の多重実行防止フラグ
-let lastSavedPassword = ''; // パスワードの変更・解除検知用
+let lastSavedPasswordHash = ''; // パスワードの変更・解除検知用（ハッシュ値で保持）
 
 const isMac = navigator.platform.toUpperCase().indexOf('MAC') >= 0;
 
 let customAccountDict = []; // カスタム科目辞書の配列
+
+// 🌟 パフォーマンス最適化: 数値フォーマッターをグローバルに1回だけインスタンス化して使い回す
+const jpyFormatter = new Intl.NumberFormat('ja-JP');
 
 // --- 設定保存用ユーティリティ (SQLiteベース) ---
 function getDbSetting(key, defaultValue = null) {
@@ -44,6 +47,15 @@ function setDbSetting(key, value) {
   } catch (e) {
     console.error('Setting write error:', e);
   }
+}
+
+// --- セキュアな状態管理用ユーティリティ ---
+async function getPasswordHash(password) {
+  if (!password) return '';
+  const msgUint8 = new TextEncoder().encode(password);
+  const hashBuffer = await crypto.subtle.digest('SHA-256', msgUint8);
+  const hashArray = Array.from(new Uint8Array(hashBuffer));
+  return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
 }
 
 // --- 自動バックアップ (IndexedDB) ロジック ---
@@ -108,6 +120,42 @@ async function clearDraft() {
 
 // 未保存状態（isDirty）のセットとUIバッジの更新
 function setDirty(state) {
+  // 自動バックアップの実行 (10秒デバウンス: 入力が落ち着いたタイミングで実行)
+  // ⚠️ タイマーのリセット処理は state の変化に関わらず毎回実行させる
+  if (state && db) {
+    if (draftTimer) {
+      clearTimeout(draftTimer);
+    }
+    draftTimer = setTimeout(async () => {
+      try {
+        if (!isDirty) return; // 【追加】タイマー発火時点でのキャンセル確認
+
+        let data = db.export();
+        const password = document.getElementById('file-password').value;
+        if (password) {
+          data = await encryptData(data, password);
+        }
+
+        if (!isDirty) return; // 【追加】非同期処理中に手動保存された場合は破棄する
+
+        await saveDraft(data);
+      } catch (e) {
+        console.error('Draft save failed', e);
+      } finally {
+        draftTimer = null; // 保存完了後にタイマーを解放
+      }
+    }, 10000);
+  } else if (!state) {
+    if (draftTimer) {
+      clearTimeout(draftTimer);
+      draftTimer = null;
+    }
+    clearDraft();
+  }
+
+  // 🌟 DOM Thrashing 防止: 状態が変化していない場合はDOM操作をスキップする (Early Return)
+  if (isDirty === state) return;
+
   isDirty = state;
   const badge = document.getElementById('dirty-badge');
   if (badge) {
@@ -140,38 +188,6 @@ function setDirty(state) {
     filenameBadge.textContent = fileName;
     filenameBadge.classList.remove('hidden');
   }
-
-  // 自動バックアップの実行 (10秒デバウンス: 入力が落ち着いたタイミングで実行し、db.export() によるタイピング中のフリーズを防止)
-  if (state && db) {
-    if (draftTimer) {
-      clearTimeout(draftTimer);
-    }
-    draftTimer = setTimeout(async () => {
-      try {
-        if (!isDirty) return; // 【追加】タイマー発火時点でのキャンセル確認
-
-        let data = db.export();
-        const password = document.getElementById('file-password').value;
-        if (password) {
-          data = await encryptData(data, password);
-        }
-
-        if (!isDirty) return; // 【追加】非同期処理中に手動保存された場合は破棄する
-
-        await saveDraft(data);
-      } catch (e) {
-        console.error('Draft save failed', e);
-      } finally {
-        draftTimer = null; // 保存完了後にタイマーを解放
-      }
-    }, 10000);
-  } else if (!state) {
-    if (draftTimer) {
-      clearTimeout(draftTimer);
-      draftTimer = null;
-    }
-    clearDraft();
-  }
 }
 
 // --- 共通ユーティリティ ---
@@ -183,6 +199,16 @@ function escapeHtml(unsafe) {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#039;');
+}
+
+// 🌟 Focus Trap: モーダル展開時に背景を非アクティブ(inert)化するヘルパー
+function setAppInert(state) {
+  const appUi = document.getElementById('app-ui');
+  const tocContainer = document.getElementById('toc-container');
+  const header = document.querySelector('header');
+  if (appUi) appUi.inert = state;
+  if (tocContainer) tocContainer.inert = state;
+  if (header) header.inert = state;
 }
 
 // セキュアなパスワード入力プロンプト (Promiseラッパー)
@@ -198,11 +224,13 @@ function requestPasswordPrompt(message) {
     input.value = '';
     modal.classList.remove('hidden');
     modal.classList.add('flex');
+    setAppInert(true);
     setTimeout(() => input.focus(), 100);
 
     const cleanup = () => {
       modal.classList.add('hidden');
       modal.classList.remove('flex');
+      setAppInert(false);
       btnSubmit.removeEventListener('click', onSubmit);
       btnCancel.removeEventListener('click', onCancel);
       input.removeEventListener('keydown', onKeyDown);
@@ -336,7 +364,7 @@ function migrateDatabase() {
       );
     `);
 
-    // 🎯 God-Rank: 既存のlocalStorageからSQLiteへのシームレスな移行
+    // 🎯 Gold-Rank: 既存のlocalStorageからSQLiteへのシームレスな移行
     try {
       const keysToMigrate = ['customAccountDict', 'fiscalMonth', 'accountDict'];
       let checkStmt, insertStmt;
@@ -405,7 +433,7 @@ async function initSQLite() {
               success = true;
               if (password) {
                 document.getElementById('file-password').value = password;
-                lastSavedPassword = password;
+                lastSavedPasswordHash = await getPasswordHash(password);
               }
             } catch (err) {
               password = await requestPasswordPrompt(
@@ -477,8 +505,6 @@ async function initSQLite() {
     // DB内の設定を読み込んでUIに反映
     loadSettingsFromDb();
 
-    document.getElementById('app-ui').classList.remove('hidden');
-
     // 【パフォーマンス対策】データ数が多い場合は、起動時のフリーズを防ぐためデフォルトで「今年度」のみを表示
     const countRes = db.exec('SELECT COUNT(*) FROM records');
     const recordCount = countRes.length > 0 ? countRes[0].values[0][0] : 0;
@@ -486,6 +512,13 @@ async function initSQLite() {
       setFiscalYearFilter();
     } else {
       renderData();
+    }
+
+    // 🌟 FOUC防止: レンダリング完了直後にフェードインさせる
+    const appUi = document.getElementById('app-ui');
+    if (appUi) {
+      appUi.classList.remove('hidden');
+      appUi.classList.add('animate-fade-in');
     }
 
     // PWAとしてOSからファイルがダブルクリックされた場合の処理
@@ -731,7 +764,7 @@ function insertRecord(parentId, memo, amountExpr, dateStr = null, accountStr = n
   }
 
   // 新しいアイテムが常にブロックの一番下に追加されるよう、現在の最大sort_orderを取得
-  let maxSort = 0;
+  let maxSort = -1;
   if (parentId) {
     let checkStmt;
     try {
@@ -747,7 +780,7 @@ function insertRecord(parentId, memo, amountExpr, dateStr = null, accountStr = n
       if (checkStmt) checkStmt.free();
     }
   }
-  const newSortOrder = maxSort > 0 ? maxSort + 1 : 0;
+  const newSortOrder = maxSort + 1;
 
   let query =
     'INSERT INTO records (parent_id, memo, amount, account, sort_order) VALUES (?, ?, ?, ?, ?)';
@@ -878,7 +911,7 @@ window.createCollectionRecord = function (id) {
       const newMemo = `${cleanMemo} (決済) ${tag}`;
 
       // 💡 修正3: ブロック内の最大 sort_order を取得して順番を壊さないようにする
-      let maxSort = 0;
+      let maxSort = -1;
       let sortStmt = null;
       try {
         sortStmt = db.prepare('SELECT MAX(sort_order) FROM records WHERE parent_id = ?');
@@ -948,8 +981,14 @@ function updateRecord(id, field, newValue, element) {
       val = evaluateMath(val.replace(/,/g, ''));
       if (val === null) {
         alert('金額の入力、または数式が正しくありません。');
-        renderData(); // 元の値に戻すために再レンダリング
+        if (element) {
+          element.classList.add('!bg-red-100', '!text-red-600');
+          setTimeout(() => element.focus(), 10);
+        }
         return;
+      }
+      if (element) {
+        element.classList.remove('!bg-red-100', '!text-red-600');
       }
     }
   } else if (field === 'created_at') {
@@ -1025,9 +1064,9 @@ function updateRecord(id, field, newValue, element) {
         // カンマが除去された表示を元に戻す
         if (element && field === 'amount') {
           if (element.tagName === 'INPUT') {
-            element.value = val !== null ? val.toLocaleString('ja-JP') : '';
+            element.value = val !== null ? jpyFormatter.format(val) : '';
           } else {
-            element.innerText = val !== null ? val.toLocaleString('ja-JP') : '';
+            element.innerText = val !== null ? jpyFormatter.format(val) : '';
           }
         }
         return; // 変更なし
@@ -1080,9 +1119,9 @@ function updateRecord(id, field, newValue, element) {
     // DOM全体を破壊せず、金額表示と合計値のみをソフトに更新する（クリック消失バグ防止）
     if (element) {
       if (element.tagName === 'INPUT') {
-        element.value = val !== null ? val.toLocaleString('ja-JP') : '';
+        element.value = val !== null ? jpyFormatter.format(val) : '';
       } else {
-        element.innerText = val !== null ? val.toLocaleString('ja-JP') : '';
+        element.innerText = val !== null ? jpyFormatter.format(val) : '';
       }
     }
     updateTotalsOnly();
@@ -1227,7 +1266,7 @@ function updateTotalsOnly() {
         if (stmtBlock.step()) blockTotal = stmtBlock.get()[0] || 0;
         stmtBlock.reset();
         const el = document.getElementById(`block-total-${blockId}`);
-        if (el) el.innerText = blockTotal.toLocaleString('ja-JP');
+        if (el) el.innerText = jpyFormatter.format(blockTotal);
       });
     }
   } catch (e) {
@@ -1297,12 +1336,12 @@ function animateTotal(newTotal) {
     const progress = Math.min((currentTime - startTime) / duration, 1);
     const ease = 1 - Math.pow(1 - progress, 3); // easeOutCubic
     const current = Math.floor(start + (newTotal - start) * ease);
-    el.textContent = current.toLocaleString('ja-JP');
+    el.textContent = jpyFormatter.format(current);
     currentDisplayedTotal = current;
     if (progress < 1) {
       totalAnimationId = requestAnimationFrame(update);
     } else {
-      el.textContent = newTotal.toLocaleString('ja-JP');
+      el.textContent = jpyFormatter.format(newTotal);
       currentDisplayedTotal = newTotal;
       totalAnimationId = null; // 完了時にリセット
     }
@@ -1402,6 +1441,20 @@ function updatePeriodDropdown() {
   // 選択肢が更新された場合のみDOMを書き換える（フォーカス消失防止）
   if (select.innerHTML !== html) {
     select.innerHTML = html;
+  }
+
+  // 🎯 カスタム期間が選択されている場合の表示上書き
+  if (window.currentActiveMonths && window.currentActiveMonths.length > 0) {
+    const existingCustom = select.querySelector('option[value="custom"]');
+    if (existingCustom) existingCustom.remove();
+
+    const customOpt = new Option("--- カスタム期間を選択中 ---", "custom", true, true);
+    customOpt.disabled = true;
+    select.insertBefore(customOpt, select.firstChild);
+    select.value = 'custom';
+    select.classList.add('!bg-blue-50', '!text-blue-600');
+  } else {
+    select.classList.remove('!bg-blue-50', '!text-blue-600');
     if (select.querySelector(`option[value="${currentVal}"]`)) {
       select.value = currentVal;
     } else {
@@ -1516,7 +1569,6 @@ function setMultiMonthFilter(monthArray, btn = null) {
   }
 
   window.currentActiveMonths = targetMonths;
-  if (select) select.value = 'all';
 
   // 🎯 第2引数を true にすることで「年度の紫・緑色」を消さずに「月ボタンの青色」を両立させる
   setActiveQuickPeriodButton(btn, true);
@@ -1535,8 +1587,6 @@ function setCalendarYearFilter(btn = null) {
   let months = [];
   for (let m = 1; m <= 12; m++) months.push(`${year}-${String(m).padStart(2, '0')}`);
   window.currentActiveMonths = months;
-  const select = document.getElementById('period-filter');
-  if (select) select.value = 'all';
   setActiveQuickPeriodButton(btn);
   if (document.startViewTransition) {
     document.startViewTransition(() => renderData());
@@ -1614,8 +1664,6 @@ function setPreviousFiscalYearFilter(btn = null) {
   }
 
   window.currentActiveMonths = months;
-  const select = document.getElementById('period-filter');
-  if (select) select.value = 'all';
   setActiveQuickPeriodButton(btn || document.getElementById('prev-fiscal-year-btn'));
   if (document.startViewTransition) {
     document.startViewTransition(() => renderData());
@@ -1646,8 +1694,6 @@ function setFiscalYearFilter(btn = null) {
   }
 
   window.currentActiveMonths = months;
-  const select = document.getElementById('period-filter');
-  if (select) select.value = 'all';
   setActiveQuickPeriodButton(btn || document.getElementById('fiscal-year-btn'));
   if (document.startViewTransition) {
     document.startViewTransition(() => renderData());
@@ -1969,7 +2015,7 @@ function renderData(focusBlockId = null) {
           'group block px-2 py-1.5 hover:bg-slate-100 rounded transition-colors cursor-pointer flex justify-between items-center';
         a.innerHTML = `
           <span class="text-sm font-medium text-slate-600 group-hover:text-blue-600 transition-colors truncate">${escapeHtml(tag)}</span>
-          <span class="text-[10px] tabular-nums tracking-tight font-bold text-slate-400 bg-slate-100 px-1.5 py-0.5 rounded group-hover:bg-white transition-colors">¥${data.amount.toLocaleString('ja-JP')}</span>
+          <span class="text-[10px] tabular-nums tracking-tight font-bold text-slate-400 bg-slate-100 px-1.5 py-0.5 rounded group-hover:bg-white transition-colors">¥${jpyFormatter.format(data.amount)}</span>
         `;
         a.onclick = (e) => {
           e.preventDefault();
@@ -2001,7 +2047,7 @@ function renderData(focusBlockId = null) {
         const btn = document.createElement('button');
         btn.className =
           'text-left p-3 rounded-lg bg-slate-50 hover:bg-slate-100 border border-slate-100 transition-colors cursor-pointer flex flex-col gap-1';
-        btn.innerHTML = `<span class="text-sm font-bold text-slate-700 truncate">${escapeHtml(tag)}</span><span class="text-xs tabular-nums tracking-tight text-slate-500">¥${data.amount.toLocaleString('ja-JP')}</span>`;
+        btn.innerHTML = `<span class="text-sm font-bold text-slate-700 truncate">${escapeHtml(tag)}</span><span class="text-xs tabular-nums tracking-tight text-slate-500">¥${jpyFormatter.format(data.amount)}</span>`;
         btn.onclick = () => showTagModal(tag, data);
         grid.appendChild(btn);
       });
@@ -2023,36 +2069,38 @@ function renderData(focusBlockId = null) {
   }
 
   // --- TOC（目次）の自動ハイライト (Scrollspy) ---
-  if (window.tocObserver) window.tocObserver.disconnect();
-
-  window.tocObserver = new IntersectionObserver(
-    (entries) => {
-      entries.forEach((entry) => {
-        if (entry.isIntersecting) {
-          document.querySelectorAll('.toc-item').forEach((el) => {
-            el.classList.remove('text-primary', 'bg-primary-50', 'font-bold');
-            el.classList.add('text-slate-500', 'font-medium');
-          });
-          const activeToc = document.querySelector(`.toc-item[href="#${entry.target.id}"]`);
-          if (activeToc) {
-            activeToc.classList.remove('text-slate-500', 'font-medium');
-            activeToc.classList.add('text-blue-600', 'bg-blue-50', 'font-bold');
-            const tocContainer = document.getElementById('toc-container');
-            if (tocContainer && !tocContainer.matches(':hover')) {
-              // scrollIntoViewはページ全体のスクロールを阻害してカクつきを生むため、コンテナ内の相対位置で安全にスクロールさせる
-              const scrollPos =
-                activeToc.offsetTop - tocContainer.clientHeight / 2 + activeToc.clientHeight / 2;
-              tocContainer.scrollTo({
-                top: scrollPos,
-                behavior: 'smooth',
-              });
+  if (!window.tocObserver) {
+    window.tocObserver = new IntersectionObserver(
+      (entries) => {
+        entries.forEach((entry) => {
+          if (entry.isIntersecting) {
+            document.querySelectorAll('.toc-item').forEach((el) => {
+              el.classList.remove('text-primary', 'bg-primary-50', 'font-bold');
+              el.classList.add('text-slate-500', 'font-medium');
+            });
+            const activeToc = document.querySelector(`.toc-item[href="#${entry.target.id}"]`);
+            if (activeToc) {
+              activeToc.classList.remove('text-slate-500', 'font-medium');
+              activeToc.classList.add('text-blue-600', 'bg-blue-50', 'font-bold');
+              const tocContainer = document.getElementById('toc-container');
+              if (tocContainer && !tocContainer.matches(':hover')) {
+                // scrollIntoViewはページ全体のスクロールを阻害してカクつきを生むため、コンテナ内の相対位置で安全にスクロールさせる
+                const scrollPos =
+                  activeToc.offsetTop - tocContainer.clientHeight / 2 + activeToc.clientHeight / 2;
+                tocContainer.scrollTo({
+                  top: scrollPos,
+                  behavior: 'smooth',
+                });
+              }
             }
           }
-        }
-      });
-    },
-    { rootMargin: '-20% 0px -60% 0px' },
-  );
+        });
+      },
+      { rootMargin: '-20% 0px -60% 0px' },
+    );
+  } else {
+    window.tocObserver.disconnect();
+  }
 
   // ブロック要素 (.group/block) のみを安全に監視対象にする
   document.querySelectorAll('.group\\/block').forEach((block) => {
@@ -2177,7 +2225,7 @@ function updateOrCreateBlockElement(block, existingEl = null) {
           <span data-id="${item.id}" data-field="memo" contenteditable="true" oninput="setDirty(true)" onpaste="handlePlainTextPaste(event)" onkeydown="if(event.key==='Enter' && !event.isComposing){event.preventDefault();this.blur();}" onblur="updateRecord(${item.id}, 'memo', this.innerText, this)" class="${isCollection ? 'text-slate-500' : 'text-blue-950'} font-medium truncate outline-none focus:bg-blue-50 focus:ring-2 focus:ring-blue-200 px-1 rounded cursor-text transition-colors empty:inline-block empty:min-w-12 empty:bg-slate-100 empty:before:content-['✎_未入力'] empty:before:text-slate-400 empty:before:text-xs empty:before:font-normal empty:before:pointer-events-none empty:focus:before:opacity-50">${escapeHtml(item.memo)}</span>
         </div>
         <div class="flex items-center space-x-1.5 sm:space-x-4 ml-2 sm:ml-auto shrink-0">
-          <input type="text" data-id="${item.id}" data-field="amount" inputmode="decimal" placeholder="0" value="${item.amount !== null && item.amount !== '' && item.amount !== undefined ? item.amount.toLocaleString('ja-JP') : ''}" oninput="setDirty(true)" onfocus="this.select()" onpaste="handlePlainTextPaste(event)" onkeydown="if(event.key==='Enter' && !event.isComposing){event.preventDefault();this.blur();}" onblur="updateRecord(${item.id}, 'amount', this.value, this)" class="bg-transparent border-0 p-0 font-medium tabular-nums tracking-tight ${isCollection ? 'text-slate-400' : 'text-blue-950'} text-right outline-none focus:bg-blue-50 focus:ring-2 focus:ring-blue-200 px-1 rounded cursor-text transition-colors w-[50px] sm:w-[80px]"><span class="text-slate-400 text-xs font-sans hidden sm:inline">円</span>
+          <input type="text" data-id="${item.id}" data-field="amount" inputmode="decimal" placeholder="0" value="${item.amount !== null && item.amount !== '' && item.amount !== undefined ? jpyFormatter.format(item.amount) : ''}" oninput="setDirty(true)" onfocus="this.select()" onpaste="handlePlainTextPaste(event)" onkeydown="if(event.key==='Enter' && !event.isComposing){event.preventDefault();this.blur();}" onblur="updateRecord(${item.id}, 'amount', this.value, this)" class="bg-transparent border-0 p-0 font-medium tabular-nums tracking-tight ${isCollection ? 'text-slate-400' : 'text-blue-950'} text-right outline-none focus:bg-blue-50 focus:ring-2 focus:ring-blue-200 px-1 rounded cursor-text transition-colors w-[50px] sm:w-[80px]"><span class="text-slate-400 text-xs font-sans hidden sm:inline">円</span>
           <div class="flex items-center space-x-0.5 sm:space-x-1 md:opacity-0 md:group-hover/item:opacity-100 focus-within:opacity-100 transition-opacity">
             ${checkBtnHtml}
             <button onclick="duplicateRecord(${item.id})" aria-label="複製" class="text-slate-300 hover:text-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-600/30 rounded p-1.5 sm:p-2 -m-1 transition-colors cursor-pointer" title="複製">
@@ -2235,11 +2283,11 @@ function updateOrCreateBlockElement(block, existingEl = null) {
     <div onclick="toggleBlock(${block.id})" class="bg-slate-50/50 px-8 py-5 border-b border-slate-100 flex justify-between items-center transition-colors cursor-pointer select-none group/header hover:bg-slate-100">
       <div class="flex items-center gap-3 overflow-hidden">
         <svg id="block-icon-${block.id}" class="w-5 h-5 text-slate-400 transition-transform duration-200" style="transform: ${iconRotation};"><use href="#icon-chevron-down"></use></svg>
-        <h2 data-id="${block.id}" data-field="memo" contenteditable="true" oninput="setDirty(true)" onpaste="handlePlainTextPaste(event)" onclick="event.stopPropagation()" onkeydown="if(event.key==='Enter' && !event.isComposing){event.preventDefault();this.blur();}" onblur="updateRecord(${block.id}, 'memo', this.innerText, this)" class="text-xl font-extrabold text-blue-950 tracking-tight outline-none focus:bg-white focus:ring-2 focus:ring-blue-600/30 px-1 rounded cursor-text truncate transition-colors empty:inline-block empty:min-w-20 empty:bg-slate-100 empty:before:content-['✎_タイトル未入力'] empty:before:text-slate-400 empty:before:text-sm empty:before:font-normal empty:before:pointer-events-none empty:focus:before:opacity-50">${escapeHtml(block.memo)}</h2>
+        <h2 data-id="${block.id}" data-field="memo" contenteditable="true" oninput="setDirty(true)" onpaste="handlePlainTextPaste(event)" onclick="event.stopPropagation()" onkeydown="if(event.key==='Enter' && !event.isComposing){event.preventDefault();this.blur();}" onblur="updateRecord(${block.id}, 'memo', this.innerText, this)" class="select-text text-xl font-extrabold text-blue-950 tracking-tight outline-none focus:bg-white focus:ring-2 focus:ring-blue-600/30 px-1 rounded cursor-text truncate transition-colors empty:inline-block empty:min-w-20 empty:bg-slate-100 empty:before:content-['✎_タイトル未入力'] empty:before:text-slate-400 empty:before:text-sm empty:before:font-normal empty:before:pointer-events-none empty:focus:before:opacity-50">${escapeHtml(block.memo)}</h2>
         ${blockBadgeHtml}
       </div>
       <div class="flex items-center shrink-0">
-        <div class="font-bold tabular-nums tracking-tight text-blue-950 text-lg"><span id="block-total-${block.id}">${blockTotal.toLocaleString('ja-JP')}</span> <span class="text-slate-400 text-sm font-sans">円</span></div>
+        <div class="font-bold tabular-nums tracking-tight text-blue-950 text-lg"><span id="block-total-${block.id}">${jpyFormatter.format(blockTotal)}</span> <span class="text-slate-400 text-sm font-sans">円</span></div>
         <div class="flex items-center pl-4 border-l border-slate-200/50 ml-4 shrink-0 h-8">
           <button onclick="event.stopPropagation(); sortBlockByDate(${block.id})" aria-label="日付順に並べ替え" class="w-8 h-8 flex items-center justify-center rounded text-slate-300 hover:bg-slate-100 hover:text-slate-600 md:opacity-0 md:group-hover/block:opacity-100 focus:opacity-100 focus:outline-none focus:ring-2 focus:ring-slate-200 transition-all cursor-pointer mr-1 ${block.children.length < 2 ? 'opacity-30 pointer-events-none md:!opacity-30' : ''}" title="日付の古い順に並べ替える">
             <svg class="w-5 h-5"><use href="#icon-sort"></use></svg>
@@ -2541,7 +2589,7 @@ async function saveGrindFile(isSaveAs = false) {
   if (isSaving) return;
   isSaving = true;
 
-  // 🎯 God-Rank: 現在フォーカス中の要素を特定・記憶する
+  // 🎯 Gold-Rank: 現在フォーカス中の要素を特定・記憶する
   let activeSelector = null;
   const activeEl = document.activeElement;
   if (
@@ -2585,22 +2633,23 @@ async function saveGrindFile(isSaveAs = false) {
 
     let data = db.export();
     const currentPassword = document.getElementById('file-password').value;
+    const currentPasswordHash = await getPasswordHash(currentPassword);
 
     // 【セキュリティ修正 1】: パスワードを空にして暗号化を解除しようとした場合の警告
-    if (lastSavedPassword !== '' && currentPassword === '') {
+    if (lastSavedPasswordHash !== '' && currentPassword === '') {
       if (
         !confirm(
           '⚠️ 警告 ⚠️\nパスワードが空になっています。\nこのまま保存すると、ファイルの暗号化が解除され「平文」で保存されます。\n\n本当に暗号化を解除して保存しますか？',
         )
       ) {
-        document.getElementById('file-password').value = lastSavedPassword; // パスワードを復元して中断
+        alert('保存を中断しました。パスワードを空のままにせず、再度入力してください。');
         isSaving = false;
         return;
       }
     }
 
     // 【セキュリティ修正 2】: 新規パスワード設定時、または変更時の「確認ダイアログ」
-    if (currentPassword !== '' && currentPassword !== lastSavedPassword) {
+    if (currentPassword !== '' && currentPasswordHash !== lastSavedPasswordHash) {
       const confirmPw = await requestPasswordPrompt(
         '🔒 新しいパスワードを設定（または変更）します。\n確認のため、同じパスワードをもう一度入力してください:',
       );
@@ -2674,7 +2723,7 @@ async function saveGrindFile(isSaveAs = false) {
           '<span class="text-green-400">💾</span>',
         );
         showSaveSuccessFeedback();
-        lastSavedPassword = currentPassword;
+        lastSavedPasswordHash = currentPasswordHash;
         return;
       }
     }
@@ -2711,13 +2760,14 @@ async function saveGrindFile(isSaveAs = false) {
       '<span class="text-green-400">💾</span>',
     );
     showSaveSuccessFeedback();
-    lastSavedPassword = currentPassword;
+    lastSavedPasswordHash = currentPasswordHash;
   } catch (err) {
     console.error('Save failed:', err);
+    showToast('エラー: ファイルの保存に失敗しました。容量や権限を確認してください', '<span class="text-red-400">❌</span>', 'error');
   } finally {
     isSaving = false;
 
-    // 🎯 God-Rank: 保存が終わったら、超高速でフォーカスを元の位置に戻す
+    // 🎯 Gold-Rank: 保存が終わったら、超高速でフォーカスを元の位置に戻す
     if (activeSelector) {
       requestAnimationFrame(() => {
         try {
@@ -2744,6 +2794,11 @@ async function saveGrindFile(isSaveAs = false) {
 
 // 5. 【核心部】 ファイル読み込みの共通処理
 async function processFileHandle(handle, isDummy = false) {
+  if (!SQL) {
+    alert('データベースエンジンを起動中です。数秒待ってから再度お試しください。');
+    return;
+  }
+
   try {
     const file = await handle.getFile();
 
@@ -2769,7 +2824,7 @@ async function processFileHandle(handle, isDummy = false) {
           success = true;
           if (password) {
             document.getElementById('file-password').value = password;
-            lastSavedPassword = password;
+            lastSavedPasswordHash = await getPasswordHash(password);
           }
         } catch (err) {
           password = await requestPasswordPrompt(
@@ -2894,6 +2949,7 @@ function showExportModal() {
   modal.classList.remove('hidden');
   modal.classList.add('flex');
   document.body.style.overflow = 'hidden';
+  setAppInert(true);
 }
 
 function closeExportModal() {
@@ -2901,6 +2957,7 @@ function closeExportModal() {
   modal.classList.add('hidden');
   modal.classList.remove('flex');
   document.body.style.overflow = '';
+  setAppInert(false);
 }
 
 function executeExport() {
@@ -3213,6 +3270,7 @@ function showCSVModal() {
   modal.classList.remove('hidden');
   modal.classList.add('flex');
   document.body.style.overflow = 'hidden';
+  setAppInert(true);
   updateCSVPreview(); // プレビューとマッピングを初期描画
 }
 
@@ -3254,6 +3312,9 @@ function updateCSVPreview() {
         currentLine = [];
         currentCellChars = [];
       } else {
+        if (currentCellChars.length > 10000) {
+          throw new Error('セルの文字数が制限(10,000文字)を超えました。不正なCSVの可能性があります。');
+        }
         currentCellChars.push(char);
       }
     }
@@ -3322,7 +3383,7 @@ function updateCSVPreview() {
   if (mapAccount && mapAccount.selectedIndex < 1 && maxCols >= 4) mapAccount.value = '3'; // 4列以上あれば適当に
   if (mapMemo.selectedIndex < 1 && maxCols >= 2) mapMemo.value = '1';
   if (mapAmount.selectedIndex < 1 && maxCols >= 3) mapAmount.value = '2';
-  // --- 💡 God-Rank: ヘッダー文字からの自動マッピング推論 ---
+  // --- 💡 Gold-Rank: ヘッダー文字からの自動マッピング推論 ---
   if (mapDate.selectedIndex < 1) {
     const dateIdx = firstRow.findIndex((c) => c && c.match(/日|date/i));
     mapDate.value = dateIdx !== -1 ? dateIdx.toString() : maxCols >= 1 ? '0' : '-1';
@@ -3421,6 +3482,7 @@ function closeCSVModal() {
   modal.classList.add('hidden');
   modal.classList.remove('flex');
   document.body.style.overflow = '';
+  setAppInert(false);
   pendingCSVData = [];
   pendingCSVBuffer = null;
 }
@@ -3518,7 +3580,7 @@ function executeCSVImport() {
       let amount = Math.round(parseFloat(amountStr));
 
       // 文字列の末尾が「-」で終わっている場合はマイナス反転させる
-      if (amountStr.endsWith('-')) {
+      if (amountStr.endsWith('-') && !amountStr.startsWith('-')) {
         amount = -Math.abs(amount);
       }
       if (amount > 10000000000000 || amount < -10000000000000) {
@@ -3648,7 +3710,7 @@ function copyAsMarkdown() {
     const account = row[1] || '未分類';
     const memo = row[2] || '名称未設定';
     const amountStr =
-      row[3] !== null ? parseInt(row[3], 10).toLocaleString('ja-JP') + '円' : '金額未定';
+      row[3] !== null ? jpyFormatter.format(parseInt(row[3], 10)) + '円' : '金額未定';
 
     markdown += `- **${date}** [${account}] ${memo} : **${amountStr}**\n`;
   });
@@ -3692,7 +3754,7 @@ window.addEventListener('appinstalled', () => {
 // --- コマンドパレット制御 ---
 let isCommandPaletteOpen = false;
 let selectedCommandIndex = 0;
-let prePaletteActiveElement = null; // 🎯 God-Rank用: パレットを開く直前のフォーカス要素
+let prePaletteActiveElement = null; // 🎯 Gold-Rank用: パレットを開く直前のフォーカス要素
 const commandsList = [
   {
     id: 'save',
@@ -3780,6 +3842,7 @@ function toggleCommandPalette() {
     palette.classList.remove('hidden');
     palette.classList.add('flex');
     document.body.style.overflow = 'hidden';
+    setAppInert(true);
     input.value = '';
     selectedCommandIndex = 0;
     renderCommandList();
@@ -3793,6 +3856,7 @@ function toggleCommandPalette() {
     palette.classList.add('hidden');
     palette.classList.remove('flex');
     document.body.style.overflow = '';
+    setAppInert(false);
   }
 }
 
@@ -3847,12 +3911,12 @@ function getFilteredCommands(query) {
         filtered.unshift({
           id: 'calculator',
           icon: '<svg class="w-5 h-5 text-green-500"><use href="#icon-sparkles"></use></svg>',
-          title: `= ${calcResult.toLocaleString('ja-JP')} <span class="text-xs text-slate-400 ml-2">(Enterで適用またはコピー)</span>`,
+          title: `= ${jpyFormatter.format(calcResult)} <span class="text-xs text-slate-400 ml-2">(Enterで適用またはコピー)</span>`,
           action: () => {
             const resultStr = calcResult.toString();
             navigator.clipboard.writeText(resultStr);
 
-            // 🎯 God-Rank: パレットを開く直前が入力欄だった場合、直接代入する
+            // 🎯 Gold-Rank: パレットを開く直前が入力欄だった場合、直接代入する
             if (prePaletteActiveElement) {
               if (prePaletteActiveElement.hasAttribute('contenteditable')) {
                 prePaletteActiveElement.innerText = resultStr;
@@ -3893,7 +3957,7 @@ function getFilteredCommands(query) {
             }
 
             showToast(
-              `${calcResult.toLocaleString('ja-JP')} をコピーしました`,
+              `${jpyFormatter.format(calcResult)} をコピーしました`,
               '<span class="text-green-400">📋</span>',
             );
           },
@@ -3977,7 +4041,7 @@ document.addEventListener('keydown', (e) => {
 
   if (e.key === 'Escape') {
     // モーダルやパレットが開いていれば閉じる
-    // 💡 God-Rank: 2段階クローズ（文字がある場合はクリア、空なら閉じる）
+    // 💡 Gold-Rank: 2段階クローズ（文字がある場合はクリア、空なら閉じる）
     if (isCommandPaletteOpen) {
       toggleCommandPalette();
       const input = document.getElementById('cmd-input');
@@ -4392,6 +4456,7 @@ function showAccountDictEditor() {
   modal.classList.remove('hidden');
   modal.classList.add('flex');
   document.body.style.overflow = 'hidden';
+  setAppInert(true);
   renderCustomDictEditor();
 
   document.getElementById('add-custom-dict-form').onsubmit = (e) => {
@@ -4417,6 +4482,7 @@ function closeAccountDictEditor() {
   modal.classList.add('hidden');
   modal.classList.remove('flex');
   document.body.style.overflow = '';
+  setAppInert(false);
   // 変更を保存せずに閉じた場合は、元の状態に戻す
   loadCustomDict();
 }
@@ -4428,6 +4494,7 @@ function saveCustomDictAndClose() {
   modal.classList.add('hidden');
   modal.classList.remove('flex');
   document.body.style.overflow = '';
+  setAppInert(false);
 }
 
 function renderCustomDictEditor() {
@@ -4529,10 +4596,9 @@ function setAllCustomAccountsHidden(isHidden) {
 function showTagModal(tag, data) {
   const modal = document.getElementById('tag-modal');
   document.getElementById('tag-modal-title').textContent = tag;
-  // 💡 God-Rank: タグ名の横に (全○件) と表示して分析しやすくする
+  // 💡 Gold-Rank: タグ名の横に (全○件) と表示して分析しやすくする
   document.getElementById('tag-modal-title').textContent = `${tag} (${data.items.length}件)`;
-  document.getElementById('tag-modal-total').textContent =
-    '¥' + data.amount.toLocaleString('ja-JP');
+  document.getElementById('tag-modal-total').textContent = '¥' + jpyFormatter.format(data.amount);
 
   const tbody = document.getElementById('tag-modal-body');
   tbody.innerHTML = '';
@@ -4551,7 +4617,7 @@ function showTagModal(tag, data) {
       <tr class="hover:bg-slate-50 transition-colors border-b border-slate-50 last:border-0">
         <td class="py-4 px-6 w-20 text-xs text-slate-400 font-mono">${dateDisp}</td>
         <td class="py-4 px-4 text-slate-700 font-medium">${escapeHtml(item.memo)}</td>
-        <td class="py-4 px-6 text-right tabular-nums tracking-tight font-bold text-slate-600">¥${item.amount.toLocaleString('ja-JP')}</td>
+        <td class="py-4 px-6 text-right tabular-nums tracking-tight font-bold text-slate-600">¥${jpyFormatter.format(item.amount)}</td>
       </tr>
     `;
   });
@@ -4559,6 +4625,7 @@ function showTagModal(tag, data) {
   modal.classList.remove('hidden');
   modal.classList.add('flex');
   document.body.style.overflow = 'hidden';
+  setAppInert(true);
 }
 
 function closeTagModal() {
@@ -4566,6 +4633,7 @@ function closeTagModal() {
   modal.classList.add('hidden');
   modal.classList.remove('flex');
   document.body.style.overflow = '';
+  setAppInert(false);
 }
 
 if (!window.isSecureContext) {
@@ -4639,7 +4707,6 @@ document.addEventListener('dragenter', (e) => {
 
 // 3. ファイルがウィンドウから出ていったときの処理 (カウンタ方式)
 document.addEventListener('dragleave', (e) => {
-  if (!hasFiles(e)) return;
   e.preventDefault();
   dragCounter--;
   if (dragCounter <= 0) {
