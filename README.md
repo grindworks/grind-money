@@ -2,7 +2,7 @@
 
 **高速に入力し、本番システムへ繋ぐ。完全オフライン動作のローカルファースト会計中継アプリ**
 
-[![Demo](https://img.shields.io/badge/Demo-Play_Now-blue?style=for-the-badge)](https://grindworks.github.io/grind-money/)
+[![Demo](https://img.shields.io/badge/Demo-Play_Now-blue?style=for-the-badge)](https://grindsite.com/tools/money/)
 
 <img src="./grind-money.jpg" width="800" alt="GrindMoney Hero Image" />
 
