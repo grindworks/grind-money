@@ -545,7 +545,7 @@ async function initSQLite() {
     // PWAとしてOSからファイルがダブルクリックされた場合の処理
     handleLaunchFiles();
   } catch (err) {
-    showToast('エラー: SQLiteの起動に失敗しました', '<span>⚠️</span>', 'error');
+    showToast('エラー: SQLiteの起動に失敗しました', '<span>⚠️</span>');
     console.error(err);
 
     // ステータスバーを消し、代わりに致命的エラー画面を大きく表示する
@@ -574,33 +574,35 @@ function handleLaunchFiles() {
   }
 }
 
-// ステータス表示を数秒後に消す関数
-function hideStatus() {
-  if (statusTimeoutId) clearTimeout(statusTimeoutId);
-
-  statusTimeoutId = setTimeout(() => {
-    const statusEl = document.getElementById('status');
-    if (statusEl) {
-      statusEl.classList.remove('opacity-100', 'translate-y-0');
-      statusEl.classList.add('opacity-0', '-translate-y-4');
-      statusEl.style.pointerEvents = 'none';
-    }
-  }, 3000);
-}
-
 // トースト通知を表示するヘルパー関数
-function showToast(message, iconHtml = '✅', type = 'normal') {
+function showToast(message, iconHtml = '✅', options = {}) {
+  const { duration = 3000, rawHtml = false } = options;
   const statusEl = document.getElementById('status');
   if (!statusEl) return;
+
+  // 既存のタイマーがあればクリア
+  if (statusTimeoutId) clearTimeout(statusTimeoutId);
 
   // 通知の種類に関わらず、システム通知らしく安定した黒背景に統一
   const bgClass = 'bg-slate-900/95 border-slate-800/50';
 
-  statusEl.innerHTML = `${iconHtml} <span>${escapeHtml(message)}</span>`;
-  statusEl.className = `fixed top-4 sm:top-8 left-1/2 -translate-x-1/2 backdrop-blur-sm text-white px-5 py-2.5 rounded-full text-xs font-medium shadow-xl border transition-all duration-500 z-50 flex items-center gap-2 translate-y-0 opacity-100 ${bgClass}`;
+  const messageHtml = rawHtml ? message : `<span>${escapeHtml(message)}</span>`;
+  statusEl.innerHTML = `${iconHtml} ${messageHtml}`;
+
+  // 💡 スマホでの表示崩れを防ぐため、コンテンツの長さに応じて幅を可変にする
+  // `max-w-[90vw]` を追加し、`px-5` を `px-4` に少し詰める
+  statusEl.className = `fixed top-4 sm:top-8 left-1/2 -translate-x-1/2 max-w-[90vw] backdrop-blur-sm text-white px-4 py-2.5 rounded-full text-xs font-medium shadow-xl border transition-all duration-500 z-50 flex items-center gap-2 translate-y-0 opacity-100 ${bgClass}`;
   statusEl.style.pointerEvents = 'auto';
 
-  hideStatus();
+  if (duration > 0 && duration !== Infinity) {
+    statusTimeoutId = setTimeout(() => {
+      if (statusEl) {
+        statusEl.classList.remove('opacity-100', 'translate-y-0');
+        statusEl.classList.add('opacity-0', '-translate-y-4');
+        statusEl.style.pointerEvents = 'none';
+      }
+    }, duration);
+  }
 }
 
 // 2. ブロックまたはアイテムの追加
@@ -745,7 +747,7 @@ function addItem(parentId, memo, amount, dateStr, accountStr) {
     const today = new Date();
     const todayStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
     if (dateStr > todayStr) {
-      showToast('未来の日付で登録しました', '<span class="text-orange-400">⚠️</span>', 'warning');
+      showToast('未来の日付で登録しました', '<span class="text-orange-400">⚠️</span>');
     }
   }
 
@@ -1077,7 +1079,7 @@ function updateRecord(id, field, newValue, element) {
     const today = new Date();
     const todayStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')} 00:00:00`;
     if (val > todayStr) {
-      showToast('未来の日付が入力されました', '<span class="text-orange-400">⚠️</span>', 'warning');
+      showToast('未来の日付が入力されました', '<span class="text-orange-400">⚠️</span>');
     }
   }
 
@@ -1430,6 +1432,48 @@ function toggleAllBlocks(collapse) {
   }
 }
 
+// --- 期間表示フォーマットの共通ヘルパー ---
+function getFormattedPeriodText(activeMonths) {
+  if (!activeMonths || activeMonths.length === 0) {
+    return null;
+  }
+
+  const sorted = [...activeMonths].sort();
+  const formatMonth = (ym) => {
+    const [y, m] = ym.split('-');
+    return `${y}年${parseInt(m, 10)}月`;
+  };
+
+  if (sorted.length === 1) {
+    return formatMonth(sorted[0]);
+  }
+
+  // 12ヶ月連続しているかチェック -> 年度表示
+  if (sorted.length === 12) {
+    let isContinuous = true;
+    let [currentY, currentM] = sorted[0].split('-').map(Number);
+
+    for (let i = 1; i < 12; i++) {
+      currentM++;
+      if (currentM > 12) {
+        currentM = 1;
+        currentY++;
+      }
+      const expectedYm = `${currentY}-${String(currentM).padStart(2, '0')}`;
+      if (sorted[i] !== expectedYm) {
+        isContinuous = false;
+        break;
+      }
+    }
+    if (isContinuous) {
+      const [y, m] = sorted[0].split('-').map(Number);
+      return m === 1 ? `${y}年 (暦年)` : `${y}年度 (${m}月始)`;
+    }
+  }
+
+  return `${formatMonth(sorted[0])} 〜 ${formatMonth(sorted[sorted.length - 1])}`;
+}
+
 // --- 期間フィルターの選択肢を自動生成する ---
 function updatePeriodDropdown() {
   if (!db) return;
@@ -1477,13 +1521,15 @@ function updatePeriodDropdown() {
     const existingCustom = select.querySelector('option[value="custom"]');
     if (existingCustom) existingCustom.remove();
 
-    const customOpt = new Option("--- カスタム期間を選択中 ---", "custom", true, true);
+    const customPeriodText = getFormattedPeriodText(window.currentActiveMonths) || 'カスタム期間';
+
+    const customOpt = new Option(customPeriodText, 'custom', true, true);
     customOpt.disabled = true;
     select.insertBefore(customOpt, select.firstChild);
     select.value = 'custom';
-    select.classList.add('!bg-blue-50', '!text-blue-600');
+    select.classList.add('!text-blue-600');
   } else {
-    select.classList.remove('!bg-blue-50', '!text-blue-600');
+    select.classList.remove('!text-blue-600');
     if (select.querySelector(`option[value="${currentVal}"]`)) {
       select.value = currentVal;
     } else {
@@ -1807,21 +1853,8 @@ function renderData(focusBlockId = null) {
   const filterEl = document.getElementById('period-filter');
   const totalLabelEl = document.getElementById('grand-total-label');
   if (totalLabelEl && filterEl) {
-    if (window.currentActiveMonths && window.currentActiveMonths.length > 0) {
-      const sorted = [...window.currentActiveMonths].sort();
-      const formatMonth = (ym) => {
-        const [y, m] = ym.split('-');
-        return `${y}年${parseInt(m, 10)}月`;
-      };
-      if (sorted.length === 1) {
-        totalLabelEl.textContent = formatMonth(sorted[0]);
-      } else {
-        totalLabelEl.textContent = `${formatMonth(sorted[0])} 〜 ${formatMonth(sorted[sorted.length - 1])}`;
-      }
-    } else {
-      totalLabelEl.textContent =
-        filterEl.value !== 'all' ? filterEl.options[filterEl.selectedIndex].text : 'Total Amount';
-    }
+    // 💡 ご指摘に基づき、期間表示をドロップダウンに集約し、ラベルは常に 'Total Amount' に固定
+    totalLabelEl.textContent = 'Total Amount';
   }
 
   // 左側 TOC (目次) の構築
@@ -2709,7 +2742,7 @@ async function saveGrindFile(isSaveAs = false) {
           iconSvg.setAttribute('data-animating', 'true');
           // 万が一の重複を防ぐためハードコードで復元元を指定
           const originalUse = `<use href="#icon-save"></use>`;
-          iconSvg.innerHTML = `<use href="#icon-sparkles"></use>`;
+          iconSvg.innerHTML = `<use href="#icon-check"></use>`;
           iconSvg.classList.add('text-green-500', 'scale-125');
           saveBtn.classList.add('ring-2', 'ring-green-500/20', 'bg-green-50');
 
@@ -2795,7 +2828,7 @@ async function saveGrindFile(isSaveAs = false) {
     lastSavedPasswordHash = currentPasswordHash;
   } catch (err) {
     console.error('Save failed:', err);
-    showToast('エラー: ファイルの保存に失敗しました。容量や権限を確認してください', '<span class="text-red-400">❌</span>', 'error');
+    showToast('エラー: ファイルの保存に失敗しました。容量や権限を確認してください', '<span class="text-red-400">❌</span>');
   } finally {
     isSaving = false;
 
@@ -4699,13 +4732,9 @@ function closeTagModal() {
 
 if (!window.isSecureContext) {
   alert(
-    '⚠️ セキュリティ警告 ⚠️\n\n現在のアクセス環境 (HTTP) では、ブラウザのセキュリティ制限によりファイルの読み書きや暗号化機能がブロックされます。\n\nGrindMoneyを正常に動作させるには、必ず「HTTPS」環境にアップロードするか、「localhost」で実行してください。',
+    '⚠️ セキュリティ警告 ⚠️\n\n現在のアクセス環境 (HTTP) では、ブラウザのセキュリティ制限によりファイルの読み書きや暗号化機能がブロックされます。\n\nGrindMoneyを正常に動作させるには、必ず「HTTPS」環境にアップロードするか、「localhost」で実行してください。'
   );
-  showToast(
-    'エラー: HTTPS環境またはlocalhostでの実行が必要です',
-    '<span class="text-red-400">⚠️</span>',
-    'warning',
-  );
+  showToast('エラー: HTTPS環境またはlocalhostでの実行が必要です', '<span class="text-red-400">⚠️</span>');
 } else {
   // アプリ起動時にSQLiteをロード
   initSQLite();

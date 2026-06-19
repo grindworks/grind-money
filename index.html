@@ -267,9 +267,9 @@
           class="top-0 z-40 sticky flex flex-col gap-3 bg-white/70 backdrop-blur-2xl -mx-6 mb-10 px-6 pt-6 pb-4 border-slate-200/50 border-b transition-colors">
 
           <!-- 上段: ドロップダウンと金額 -->
-          <div class="flex justify-between items-end gap-4">
+          <div class="flex flex-col gap-4 sm:flex-row sm:justify-between sm:items-end">
             <!-- 期間フィルター -->
-            <div class="group relative flex flex-col mb-1 shrink-0">
+            <div class="group relative flex flex-col sm:mb-1 shrink-0">
               <label for="period-filter"
                 class="flex items-center gap-1 mb-1 font-bold text-[10px] text-slate-400 uppercase tracking-widest">
                 <svg class="w-3 h-3">
@@ -277,7 +277,7 @@
                 </svg> Period
               </label>
               <select id="period-filter" onchange="handleDropdownChange()"
-                class="bg-transparent pr-6 outline-none font-extrabold text-slate-800 hover:text-blue-600 text-xl sm:text-2xl transition-colors appearance-none cursor-pointer">
+                class="bg-transparent pr-6 outline-none font-extrabold text-slate-800 hover:text-blue-600 text-xl sm:text-2xl transition-colors appearance-none cursor-pointer w-full sm:w-auto">
                 <option value="all">すべての期間</option>
               </select>
               <!-- ドロップダウン用の矢印アイコン -->
@@ -288,7 +288,7 @@
             </div>
 
             <!-- 金額表示 -->
-            <div class="min-w-0 flex flex-col items-end text-right">
+            <div class="w-full min-w-0 flex flex-col items-end text-right">
               <div class="flex items-center gap-3 mb-1">
                 <!-- 修正: スクロール追従型のミニ保存ボタン (ラベルと横並びにして被りを防止) -->
                 <button onclick="saveGrindFile()" id="floating-save-btn"
@@ -307,7 +307,7 @@
               <p class="text-blue-950 font-black tabular-nums text-4xl sm:text-5xl md:text-6xl break-words tracking-tight"
                 id="grand-total">
                 <span id="grand-total-num">0</span> <span
-                  class="ml-1 font-sans font-bold text-slate-400 text-xl align-baseline">JPY</span>
+                  class="ml-1 font-sans font-bold text-slate-400 text-xl align-baseline">YEN</span>
               </p>
             </div>
           </div>
@@ -676,12 +676,10 @@
           navigator.serviceWorker.addEventListener('controllerchange', () => {
             if (!refreshing) {
               refreshing = true;
-              // 強制リロードをやめ、ステータスバーで通知しユーザーのクリックを待つ
-              const statusEl = document.getElementById("status");
-              if (statusEl) {
-                statusEl.innerHTML = `<span class="text-blue-400">✨</span> アプリが最新版に更新されました。<a href="#" onclick="location.reload(); return false;" class="ml-2 font-bold underline cursor-pointer">リロードして適用</a>`;
-                statusEl.className = "fixed top-4 sm:top-8 left-1/2 -translate-x-1/2 bg-slate-900/95 backdrop-blur-sm text-white px-5 py-2.5 rounded-full text-xs font-medium shadow-xl border border-slate-800/50 transition-all duration-500 z-50 flex items-center gap-2 translate-y-0 opacity-100";
-                statusEl.style.pointerEvents = "auto";
+              // 共通のトースト関数を呼び出して、レスポンシブかつ永続的な通知を表示
+              if (typeof showToast === 'function') {
+                const message = `アプリが最新版に更新されました。<a href="#" onclick="location.reload(); return false;" class="ml-2 font-bold underline cursor-pointer">リロードして適用</a>`;
+                showToast(message, '<span class="text-blue-400">✨</span>', { duration: Infinity, rawHtml: true });
               }
             }
           });
