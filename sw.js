@@ -1,5 +1,5 @@
 // 💡 アップデート時はここを v2, v3... と書き換えることで更新が発火します
-const CACHE_NAME = 'grindmoney-v20260619-14';
+const CACHE_NAME = 'grindmoney-v20260619-15';
 const urlsToCache = [
   './',
   './index.html',
@@ -74,11 +74,6 @@ self.addEventListener('activate', (event) => {
 
 // fetchイベントでキャッシュを返す
 self.addEventListener('fetch', (event) => {
-  // Google Fontsへのリクエストはキャッシュ戦略から除外（常にネットワークから取得）
-  if (event.request.url.startsWith('https://fonts.googleapis.com') || event.request.url.startsWith('https://fonts.gstatic.com')) {
-    return;
-  }
-
   event.respondWith(
     (async () => {
       const cache = await caches.open(CACHE_NAME);
