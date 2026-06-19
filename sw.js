@@ -1,5 +1,5 @@
 // 💡 アップデート時はここを v2, v3... と書き換えることで更新が発火します
-const CACHE_NAME = 'grindmoney-v20260619-13';
+const CACHE_NAME = 'grindmoney-v20260619-14';
 const urlsToCache = [
   './',
   './index.html',
@@ -8,6 +8,7 @@ const urlsToCache = [
   './icon-192.png',
   './icon-512.png',
   './manifest.json',
+  './offline.html', // 💡 オフライン時のフォールバックページ
 ];
 
 const externalUrlsToCache = [
@@ -94,27 +95,7 @@ self.addEventListener('fetch', (event) => {
         } catch (error) {
           // ネットワークエラー（オフライン）で、キャッシュにもない場合のフォールバック
           if (event.request.mode === 'navigate' || (event.request.headers.get('accept') && event.request.headers.get('accept').includes('text/html'))) {
-            return new Response(`
-              <!DOCTYPE html>
-              <html lang="ja">
-              <head>
-                <meta charset="UTF-8">
-                <meta name="viewport" content="width=device-width, initial-scale=1.0">
-                <title>GrindMoney - 通知</title>
-                <style>
-                  body { font-family: sans-serif; background-color: #fafafa; color: #333; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; margin: 0; text-align: center; padding: 20px; }
-                  h1 { font-size: 20px; color: #111827; margin-bottom: 16px; font-weight: bold; }
-                  p { font-size: 15px; color: #4b5563; line-height: 1.6; margin-bottom: 24px; }
-                  .icon { font-size: 48px; margin-bottom: 16px; }
-                </style>
-              </head>
-              <body>
-                <div class="icon">💡</div>
-                <h1>ブラウザのキャッシュがクリアされたようです</h1>
-                <p>お金のデータ（.grindファイル）はあなたのPCに安全に保存されていますので、ご安心ください！<br><br>アプリを再びオフラインで使うには、お手数ですが<strong>一度インターネットに接続した状態で、GrindMoneyにアクセスし直して</strong>ください。<br>すぐに元通り使えるようになります。</p>
-              </body>
-              </html>
-            `, { headers: { 'Content-Type': 'text/html; charset=utf-8' } });
+            return await cache.match('./offline.html');
           }
         }
       };
