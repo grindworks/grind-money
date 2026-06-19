@@ -73,46 +73,60 @@ self.addEventListener('activate', (event) => {
 
 // fetchイベントでキャッシュを返す
 self.addEventListener('fetch', (event) => {
+  // Google Fontsへのリクエストはキャッシュ戦略から除外（常にネットワークから取得）
+  if (event.request.url.startsWith('https://fonts.googleapis.com') || event.request.url.startsWith('https://fonts.gstatic.com')) {
+    return;
+  }
+
   event.respondWith(
-    caches.match(event.request).then((response) => {
-      // 1. キャッシュがあればそれを返す
-      if (response) {
-        return response;
-      }
-      // 2. キャッシュがなければネットワークから取得を試みる
-      return fetch(event.request).catch(() => {
-        // 3. オフラインかつキャッシュにもない場合のフォールバック（HTMLへのアクセス時のみ）
-        if (
-          event.request.mode === 'navigate' ||
-          (event.request.headers.get('accept') &&
-            event.request.headers.get('accept').includes('text/html'))
-        ) {
-          const fallbackHtml = `
-            <!DOCTYPE html>
-            <html lang="ja">
-            <head>
-              <meta charset="UTF-8">
-              <meta name="viewport" content="width=device-width, initial-scale=1.0">
-              <title>GrindMoney - 通知</title>
-              <style>
-                body { font-family: sans-serif; background-color: #fafafa; color: #333; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; margin: 0; text-align: center; padding: 20px; }
-                h1 { font-size: 20px; color: #111827; margin-bottom: 16px; font-weight: bold; }
-                p { font-size: 15px; color: #4b5563; line-height: 1.6; margin-bottom: 24px; }
-                .icon { font-size: 48px; margin-bottom: 16px; }
-              </style>
-            </head>
-            <body>
-              <div class="icon">💡</div>
-              <h1>ブラウザのキャッシュがクリアされたようです</h1>
-              <p>お金のデータ（.grindファイル）はあなたのPCに安全に保存されていますので、ご安心ください！<br><br>アプリを再びオフラインで使うには、お手数ですが<strong>一度インターネットに接続した状態で、GrindMoneyにアクセスし直して</strong>ください。<br>すぐに元通り使えるようになります。</p>
-            </body>
-            </html>
-          `;
-          return new Response(fallbackHtml, {
-            headers: { 'Content-Type': 'text/html; charset=utf-8' },
-          });
+    (async () => {
+      const cache = await caches.open(CACHE_NAME);
+      const cachedResponse = await cache.match(event.request);
+
+      const fetchAndCache = async () => {
+        try {
+          const networkResponse = await fetch(event.request);
+          // 正常なレスポンスの場合、キャッシュを更新
+          if (networkResponse && networkResponse.status === 200) {
+            await cache.put(event.request, networkResponse.clone());
+          }
+          return networkResponse;
+        } catch (error) {
+          // ネットワークエラー（オフライン）で、キャッシュにもない場合のフォールバック
+          if (event.request.mode === 'navigate' || (event.request.headers.get('accept') && event.request.headers.get('accept').includes('text/html'))) {
+            return new Response(`
+              <!DOCTYPE html>
+              <html lang="ja">
+              <head>
+                <meta charset="UTF-8">
+                <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                <title>GrindMoney - 通知</title>
+                <style>
+                  body { font-family: sans-serif; background-color: #fafafa; color: #333; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; margin: 0; text-align: center; padding: 20px; }
+                  h1 { font-size: 20px; color: #111827; margin-bottom: 16px; font-weight: bold; }
+                  p { font-size: 15px; color: #4b5563; line-height: 1.6; margin-bottom: 24px; }
+                  .icon { font-size: 48px; margin-bottom: 16px; }
+                </style>
+              </head>
+              <body>
+                <div class="icon">💡</div>
+                <h1>ブラウザのキャッシュがクリアされたようです</h1>
+                <p>お金のデータ（.grindファイル）はあなたのPCに安全に保存されていますので、ご安心ください！<br><br>アプリを再びオフラインで使うには、お手数ですが<strong>一度インターネットに接続した状態で、GrindMoneyにアクセスし直して</strong>ください。<br>すぐに元通り使えるようになります。</p>
+              </body>
+              </html>
+            `, { headers: { 'Content-Type': 'text/html; charset=utf-8' } });
+          }
         }
-      });
-    }),
+      };
+
+      // Stale-While-Revalidate 戦略
+      if (cachedResponse) {
+        // キャッシュヒット。バックグラウンドで更新を試みる
+        fetchAndCache();
+        return cachedResponse;
+      }
+      // キャッシュミス。ネットワークからの応答を待つ
+      return await fetchAndCache();
+    })(),
   );
 });
