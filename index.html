@@ -11,7 +11,7 @@
   <meta id="meta-theme-color" name="theme-color" content="#f8fafc">
 
   <!-- Content Security Policy (CSP) -->
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval' 'unsafe-eval' https://cdnjs.cloudflare.com https://grindsite.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; connect-src 'self' https://cdnjs.cloudflare.com ws://127.0.0.1:* ws://localhost:* wss://127.0.0.1:* wss://localhost:*; object-src 'none'; base-uri 'none';">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval' 'unsafe-eval' https://cdnjs.cloudflare.com https://grindsite.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; connect-src 'self' https://cdnjs.cloudflare.com https://grindsite.com ws://127.0.0.1:* ws://localhost:*; img-src 'self' data:; object-src 'none'; base-uri 'none';">
 
   <!-- Google Fonts (Inter + Noto Sans JP) -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -28,7 +28,7 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 
   <!-- SQLiteをブラウザ(Wasm)で動かすためのライブラリ -->
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.8.0/sql-wasm.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.8.0/sql-wasm.js" integrity="sha512-n7swEtVCvXpQ7KxgpPyp0+DQQEf5vPpmzCRl14x2sp2v5LpCYCjrAx03mkBAbWwGF9eUoIk8YVcDFuJRIeYttg==" crossorigin="anonymous"></script>
   <!-- Favicon -->
   <link rel="icon" href="icon-192.png" type="image/png">
   <link rel="manifest" href="manifest.json">
@@ -266,16 +266,6 @@
         <div
           class="top-0 z-40 sticky flex flex-col gap-3 bg-white/70 backdrop-blur-2xl -mx-6 mb-10 px-6 pt-6 pb-4 border-slate-200/50 border-b transition-colors">
 
-          <!-- 追加: スクロール追従型のミニ保存ボタン (未保存時のみ表示) -->
-          <button onclick="saveGrindFile()" id="floating-save-btn"
-            class="hidden absolute top-4 right-6 items-center gap-1.5 bg-blue-600 hover:bg-blue-700 text-white px-3 py-1.5 rounded-full text-xs font-bold shadow-sm transition-all active:scale-95 animate-modal-in z-50">
-            <span class="relative flex h-2 w-2">
-              <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-orange-400 opacity-75"></span>
-              <span class="relative inline-flex rounded-full h-2 w-2 bg-orange-500"></span>
-            </span>
-            保存
-          </button>
-
           <!-- 上段: ドロップダウンと金額 -->
           <div class="flex justify-between items-end gap-4">
             <!-- 期間フィルター -->
@@ -298,10 +288,22 @@
             </div>
 
             <!-- 金額表示 -->
-            <div class="min-w-0 text-right">
-              <p id="grand-total-label"
-                class="mb-1 font-bold text-[10px] text-slate-400 truncate uppercase tracking-[0.2em]">Total
-                Amount</p>
+            <div class="min-w-0 flex flex-col items-end text-right">
+              <div class="flex items-center gap-3 mb-1">
+                <!-- 修正: スクロール追従型のミニ保存ボタン (ラベルと横並びにして被りを防止) -->
+                <button onclick="saveGrindFile()" id="floating-save-btn"
+                  class="hidden items-center gap-1.5 bg-blue-600 hover:bg-blue-700 text-white px-3 py-1 rounded-full text-[11px] font-bold shadow-sm transition-all active:scale-95 animate-modal-in z-50">
+                  <span class="relative flex h-2 w-2">
+                    <span
+                      class="animate-ping absolute inline-flex h-full w-full rounded-full bg-orange-400 opacity-75"></span>
+                    <span class="relative inline-flex rounded-full h-2 w-2 bg-orange-500"></span>
+                  </span>
+                  保存
+                </button>
+                <p id="grand-total-label"
+                  class="font-bold text-[10px] text-slate-400 truncate uppercase tracking-[0.2em]">Total
+                  Amount</p>
+              </div>
               <p class="text-blue-950 font-black tabular-nums text-4xl sm:text-5xl md:text-6xl break-words tracking-tight"
                 id="grand-total">
                 <span id="grand-total-num">0</span> <span

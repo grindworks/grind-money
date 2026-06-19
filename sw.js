@@ -1,5 +1,5 @@
 // 💡 アップデート時はここを v2, v3... と書き換えることで更新が発火します
-const CACHE_NAME = 'grindmoney-v20260618-1';
+const CACHE_NAME = 'grindmoney-v20260619-9';
 const urlsToCache = [
   './',
   './index.html',
@@ -7,12 +7,13 @@ const urlsToCache = [
   './styles.css',
   './icon-192.png',
   './icon-512.png',
+  './manifest.json',
 ];
 
 const externalUrlsToCache = [
   'https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.8.0/sql-wasm.js',
   'https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.8.0/sql-wasm.wasm',
-  'https://grindsite.com/tools/footer.js'
+  'https://grindsite.com/tools/footer.js',
 ];
 
 // インストール時にキャッシュを作成

@@ -130,8 +130,14 @@ function setDirty(state) {
       try {
         if (!isDirty) return; // 【追加】タイマー発火時点でのキャンセル確認
 
-        let data = db.export();
         const password = document.getElementById('file-password').value;
+
+        // 🚨 修正: 元々暗号化されていたのにパスワードが空の場合は、情報漏洩を防ぐためドラフト保存を中止する
+        if (lastSavedPasswordHash !== '' && password === '') {
+          console.warn('暗号化解除状態でのオートセーブをブロックしました。');
+          return;
+        }
+        let data = db.export();
         if (password) {
           data = await encryptData(data, password);
         }
@@ -258,7 +264,22 @@ function handlePlainTextPaste(event) {
   event.preventDefault();
   const text = (event.clipboardData || window.clipboardData).getData('text/plain');
   const cleanText = text.replace(/[\r\n\t]+/g, ' ').trim();
-  document.execCommand('insertText', false, cleanText);
+  const target = event.target;
+
+  if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) {
+    const start = target.selectionStart ?? target.value.length;
+    const end = target.selectionEnd ?? start;
+    target.value = target.value.slice(0, start) + cleanText + target.value.slice(end);
+    target.selectionStart = target.selectionEnd = start + cleanText.length;
+    target.dispatchEvent(new Event('input', { bubbles: true }));
+    return;
+  }
+
+  const selection = window.getSelection();
+  if (!selection.rangeCount) return;
+  selection.deleteFromDocument();
+  selection.getRangeAt(0).insertNode(document.createTextNode(cleanText));
+  selection.collapseToEnd();
 }
 
 // --- 暗号化ロジック (Web Crypto API) ---
@@ -443,7 +464,7 @@ async function initSQLite() {
                 alert('起動をキャンセルしました。リロードしてやり直してください。');
                 document.body.innerHTML =
                   "<h1 style='text-align:center; margin-top:20vh;'>保護のため停止しました。<br>リロードしてください。</h1>";
-                throw new Error('User canceled decryption');
+                return; // throw new Error(...) をやめて静かに停止する
               }
             }
           }
@@ -575,7 +596,7 @@ function showToast(message, iconHtml = '✅', type = 'normal') {
   // 通知の種類に関わらず、システム通知らしく安定した黒背景に統一
   const bgClass = 'bg-slate-900/95 border-slate-800/50';
 
-  statusEl.innerHTML = `${iconHtml} <span>${message}</span>`;
+  statusEl.innerHTML = `${iconHtml} <span>${escapeHtml(message)}</span>`;
   statusEl.className = `fixed top-4 sm:top-8 left-1/2 -translate-x-1/2 backdrop-blur-sm text-white px-5 py-2.5 rounded-full text-xs font-medium shadow-xl border transition-all duration-500 z-50 flex items-center gap-2 translate-y-0 opacity-100 ${bgClass}`;
   statusEl.style.pointerEvents = 'auto';
 
@@ -605,12 +626,20 @@ function evaluateMath(expr) {
   if (String(expr).length > 50) return null;
 
   try {
+    const trimmedExpr = String(expr).trim();
     // 全角数字・記号を半角に変換する
-    let normalized = String(expr).replace(/[０-９＋－＊／．（）]/g, function (s) {
+    let normalized = trimmedExpr.replace(/[０-９＋－＊／．（）]/g, function (s) {
       return String.fromCharCode(s.charCodeAt(0) - 0xfee0);
     });
     // 全角の「×」「÷」「ー」などを半角記号にマッピング
-    normalized = normalized.replace(/×/g, '*').replace(/÷/g, '/').replace(/[ー−]/g, '-');
+    normalized = normalized.replace(/×/g, '*').replace(/÷/g, '/').replace(/[ー−△]/g, '-');
+
+    if (/^\([\d,.]+\)$/.test(normalized)) {
+      normalized = '-' + normalized.replace(/[()]/g, '');
+    }
+    if (normalized.endsWith('-') && !normalized.startsWith('-')) {
+      normalized = '-' + normalized.slice(0, -1);
+    }
 
     // 数字と四則演算記号以外を除去して安全化
     const sanitized = normalized.replace(/[^0-9+\-*/().]/g, '');
@@ -2247,18 +2276,21 @@ function updateOrCreateBlockElement(block, existingEl = null) {
   let blockBadgeHtml = '';
   if (block.children.length > 0) {
     let diffs = block.children.map((item) => {
-      if (!item.created_at) return 0;
+      if (!item.created_at) return null; // Exclude
       const parts = item.created_at.split(' ')[0].split('-');
-      if (parts.length !== 3) return 0;
+      if (parts.length !== 3) return null;
       const itemYear = parseInt(parts[0], 10);
       const itemMonth = parseInt(parts[1], 10);
       let itemFiscalYear = itemYear;
       if (itemMonth < startMonth) itemFiscalYear--;
       return currentFiscalYear - itemFiscalYear;
     });
-    const validDiffs = diffs.filter((d) => !isNaN(d));
+    const validDiffs = diffs.filter((d) => d !== null && !isNaN(d));
     if (validDiffs.length > 0) {
-      const minDiff = Math.min(...validDiffs);
+      // ⚠️ スプレッド構文は引数の数に上限があり、数万件のデータでRangeErrorを引き起こすため、
+      // 安全な reduce を使って最小値を計算する
+      const minDiff = validDiffs.reduce((min, curr) => Math.min(min, curr), Infinity);
+
       if (minDiff === 1) {
         blockBadgeHtml = `<span class="text-[10px] font-bold px-1.5 py-0.5 rounded bg-purple-100 text-purple-700 ml-2 shrink-0 select-none" title="このブロックは前年度のデータです">前期</span>`;
       } else if (minDiff >= 2) {
@@ -2268,7 +2300,7 @@ function updateOrCreateBlockElement(block, existingEl = null) {
   }
 
   let dateInputClass =
-    'item-date border-0 focus:ring-0 p-0 text-xs w-[110px] text-center outline-none cursor-pointer transition-colors';
+    'item-date appearance-none bg-transparent border-0 focus:ring-0 p-0 text-xs w-[110px] text-center outline-none cursor-pointer transition-colors';
   if (defaultDate > todayStr) {
     dateInputClass += ' text-red-600 font-bold bg-red-50 rounded';
   } else {
@@ -2835,6 +2867,12 @@ async function processFileHandle(handle, isDummy = false) {
       }
     }
 
+    if (!isEncrypted) {
+      lastSavedPasswordHash = '';
+      const pwInput = document.getElementById('file-password');
+      if (pwInput) pwInput.value = '';
+    }
+
     let newDb;
     try {
       newDb = new SQL.Database(Uints);
@@ -2878,6 +2916,7 @@ async function processFileHandle(handle, isDummy = false) {
       renderData();
     }
   } catch (err) {
+    console.error('processFileHandle error:', err);
     alert('ファイルの読み込みに失敗しました。');
   }
 }
@@ -3287,7 +3326,7 @@ function updateCSVPreview() {
 
     pendingCSVData = []; // グローバル変数を更新
     let currentLine = [];
-    let currentCellChars = [];
+    let currentCellStr = '';
     let inQuotes = false;
 
     for (let i = 0; i < text.length; i++) {
@@ -3298,29 +3337,29 @@ function updateCSVPreview() {
       if (i === 0 && char.charCodeAt(0) === 0xfeff) continue;
 
       if (char === '"' && nextChar === '"') {
-        currentCellChars.push('"');
+        currentCellStr += '"';
         i++; // エスケープされたクオートをスキップ
       } else if (char === '"') {
         inQuotes = !inQuotes;
       } else if (char === ',' && !inQuotes) {
-        currentLine.push(currentCellChars.join(''));
-        currentCellChars = [];
+        currentLine.push(currentCellStr);
+        currentCellStr = '';
       } else if ((char === '\n' || char === '\r') && !inQuotes) {
         if (char === '\r' && nextChar === '\n') i++; // \r\n の対応
-        currentLine.push(currentCellChars.join(''));
+        currentLine.push(currentCellStr);
         pendingCSVData.push(currentLine);
         currentLine = [];
-        currentCellChars = [];
+        currentCellStr = '';
       } else {
-        if (currentCellChars.length > 10000) {
+        if (currentCellStr.length > 10000) {
           throw new Error('セルの文字数が制限(10,000文字)を超えました。不正なCSVの可能性があります。');
         }
-        currentCellChars.push(char);
+        currentCellStr += char;
       }
     }
     // 最後の行をプッシュ
-    if (currentLine.length > 0 || currentCellChars.length > 0) {
-      currentLine.push(currentCellChars.join(''));
+    if (currentLine.length > 0 || currentCellStr.length > 0) {
+      currentLine.push(currentCellStr);
       pendingCSVData.push(currentLine);
     }
     // 最終行の空行を無視
@@ -3330,6 +3369,10 @@ function updateCSVPreview() {
       pendingCSVData[pendingCSVData.length - 1][0].trim() === ''
     ) {
       pendingCSVData.pop();
+    }
+
+    if (inQuotes) {
+      throw new Error('未閉じのクォーテーションが存在します。不正なCSVの可能性があります。');
     }
   } catch (e) {
     pendingCSVData = []; // エラー時はデータをクリア
@@ -3358,50 +3401,53 @@ function updateCSVPreview() {
   );
   const firstRow = pendingCSVData.length > 0 ? pendingCSVData[0] : [];
 
-  let optionsHtml = `<option value="-1">-- 選択しない --</option>`;
-  for (let i = 0; i < maxCols; i++) {
-    const sample = firstRow[i] !== undefined ? firstRow[i].substring(0, 15) : '';
-    optionsHtml += `<option value="${i}">列 ${i + 1} (${sample})</option>`;
-  }
-
   const oldVals = {
     date: mapDate.value,
     account: mapAccount ? mapAccount.value : '-1',
     memo: mapMemo.value,
     amount: mapAmount.value,
   };
+
+  let defaultDate = oldVals.date;
+  let defaultAccount = oldVals.account;
+  let defaultMemo = oldVals.memo;
+  let defaultAmount = oldVals.amount;
+
+  // --- 💡 Gold-Rank: ヘッダー文字からの自動マッピング推論 ---
+  if (defaultDate === '-1' && maxCols >= 1) {
+    const dateIdx = firstRow.findIndex((c) => c && c.match(/日|date/i));
+    defaultDate = dateIdx !== -1 ? dateIdx.toString() : '0';
+  }
+  if (mapAccount && defaultAccount === '-1' && maxCols >= 4) {
+    const accIdx = firstRow.findIndex((c) => c && c.match(/科目|account/i));
+    defaultAccount = accIdx !== -1 ? accIdx.toString() : '3';
+  }
+  if (defaultMemo === '-1' && maxCols >= 2) {
+    const memoIdx = firstRow.findIndex(
+      (c) => c && c.match(/摘要|メモ|内容|店名|利用先|memo|description/i),
+    );
+    defaultMemo = memoIdx !== -1 ? memoIdx.toString() : '1';
+  }
+  if (defaultAmount === '-1' && maxCols >= 3) {
+    const amountIdx = firstRow.findIndex((c) => c && c.match(/金額|支払|出金|入金|利用額|amount/i));
+    defaultAmount = amountIdx !== -1 ? amountIdx.toString() : '2';
+  }
+
+  let optionsHtml = `<option value="-1">-- 選択しない --</option>`;
+  for (let i = 0; i < maxCols; i++) {
+    const sample = firstRow[i] !== undefined ? firstRow[i].substring(0, 15) : '';
+    optionsHtml += `<option value="${i}">列 ${i + 1} (${escapeHtml(sample)})</option>`;
+  }
+
   mapDate.innerHTML = optionsHtml;
   if (mapAccount) mapAccount.innerHTML = optionsHtml;
   mapMemo.innerHTML = optionsHtml;
   mapAmount.innerHTML = optionsHtml;
-  mapDate.value = oldVals.date;
-  if (mapAccount) mapAccount.value = oldVals.account;
-  mapMemo.value = oldVals.memo;
-  mapAmount.value = oldVals.amount;
 
-  if (mapDate.selectedIndex < 1 && maxCols >= 1) mapDate.value = '0';
-  if (mapAccount && mapAccount.selectedIndex < 1 && maxCols >= 4) mapAccount.value = '3'; // 4列以上あれば適当に
-  if (mapMemo.selectedIndex < 1 && maxCols >= 2) mapMemo.value = '1';
-  if (mapAmount.selectedIndex < 1 && maxCols >= 3) mapAmount.value = '2';
-  // --- 💡 Gold-Rank: ヘッダー文字からの自動マッピング推論 ---
-  if (mapDate.selectedIndex < 1) {
-    const dateIdx = firstRow.findIndex((c) => c && c.match(/日|date/i));
-    mapDate.value = dateIdx !== -1 ? dateIdx.toString() : maxCols >= 1 ? '0' : '-1';
-  }
-  if (mapAccount && mapAccount.selectedIndex < 1) {
-    const accIdx = firstRow.findIndex((c) => c && c.match(/科目|account/i));
-    mapAccount.value = accIdx !== -1 ? accIdx.toString() : '-1';
-  }
-  if (mapMemo.selectedIndex < 1) {
-    const memoIdx = firstRow.findIndex(
-      (c) => c && c.match(/摘要|メモ|内容|店名|利用先|memo|description/i),
-    );
-    mapMemo.value = memoIdx !== -1 ? memoIdx.toString() : maxCols >= 2 ? '1' : '-1';
-  }
-  if (mapAmount.selectedIndex < 1) {
-    const amountIdx = firstRow.findIndex((c) => c && c.match(/金額|支払|出金|入金|利用額|amount/i));
-    mapAmount.value = amountIdx !== -1 ? amountIdx.toString() : maxCols >= 3 ? '2' : '-1';
-  }
+  mapDate.value = defaultDate;
+  if (mapAccount) mapAccount.value = defaultAccount;
+  mapMemo.value = defaultMemo;
+  mapAmount.value = defaultAmount;
 
   renderCSVPreview();
 }
@@ -3577,14 +3623,20 @@ function executeCSVImport() {
 
       // その後、半角数字・ピリオド・マイナス以外を除去
       const amountStr = normalizedAmount.replace(/[^\d.-]/g, '');
-      let amount = Math.round(parseFloat(amountStr));
 
-      // 文字列の末尾が「-」で終わっている場合はマイナス反転させる
-      if (amountStr.endsWith('-') && !amountStr.startsWith('-')) {
-        amount = -Math.abs(amount);
-      }
-      if (amount > 10000000000000 || amount < -10000000000000) {
-        amount = NaN; // 上限超過は弾く
+      // ハイフンが複数ある、または先頭・末尾以外にある不正なフォーマットは弾く
+      const isInvalidHyphen =
+        (amountStr.match(/-/g) || []).length > 1 ||
+        (amountStr.includes('-') && !amountStr.startsWith('-') && !amountStr.endsWith('-'));
+
+      let amount = NaN;
+      if (!isInvalidHyphen && amountStr !== '') {
+        amount = Math.round(parseFloat(amountStr));
+        // 文字列の末尾が「-」で終わっている場合はマイナス反転させる
+        if (amountStr.endsWith('-') && !amountStr.startsWith('-')) {
+          amount = -Math.abs(amount);
+        }
+        if (amount > 10000000000000 || amount < -10000000000000) amount = NaN;
       }
 
       // 摘要(メモ)が空の行でも、金額が存在すればインポートする
@@ -3734,6 +3786,15 @@ window.addEventListener('beforeinstallprompt', (e) => {
   // カスタムのインストールボタンを表示する
   const installBtn = document.getElementById('install-button');
   if (installBtn) {
+    // 💡 [UI FIX] インストールボタンが表示されると、ヘッダーの合計金額表示と重なることがある問題の修正。
+    // ボタンが表示されることで右側の要素の幅が広がり、flexコンテナの中央要素が圧迫されるのを防ぐため、
+    // 合計金額表示エリアが縮まないように `shrink-0` を付与する。
+    const grandTotalContainer = document.getElementById('grand-total-label')?.parentElement;
+    if (grandTotalContainer) {
+      // このコンテナはflexアイテムであり、縮むことでレイアウト崩れが起きていた。
+      grandTotalContainer.classList.add('shrink-0');
+    }
+
     installBtn.classList.remove('hidden');
     // 多重登録を防ぐため、addEventListenerではなく onclick を使用
     installBtn.onclick = async () => {
@@ -4817,12 +4878,10 @@ if (btnOpenTooltip) btnOpenTooltip.title = `開く (${isMac ? '⌘O' : 'Ctrl+O'}
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'hidden' && isDirty && db) {
     try {
-      // 【追加】パスワードが設定されている場合は、平文でのバックアップを絶対に禁止する
       const currentPassword = document.getElementById('file-password').value;
-      if (currentPassword) {
-        console.warn(
-          '暗号化が有効なため、情報漏洩を防ぐ目的で平文の緊急バックアップを破棄しました。',
-        );
+      // 暗号化されている、またはされようとしている場合は、平文での緊急バックアップを中止する
+      if (lastSavedPasswordHash !== '' || currentPassword !== '') {
+        console.warn('暗号化状態での緊急バックアップをスキップします。');
         return;
       }
 
@@ -4839,16 +4898,20 @@ document.addEventListener('visibilitychange', () => {
 
       const data = db.export();
 
-      // 【セキュリティ修正 3】: タブ終了時の Race Condition キル対策
-      // 非同期の暗号化（encryptData）を待つとブラウザにプロセスを殺されてデータが消失するため、
-      // 終了時の緊急退避に限っては、サンドボックスで保護されたIndexedDBへ「同期的」に即座に叩き込む。
-      const tx = indexedDB.open(DB_NAME, 1);
-      tx.onsuccess = (e) => {
+      // visibilitychange イベント内では非同期処理が中断される可能性があるため、同期的なAPI呼び出しスタイルで記述
+      const request = indexedDB.open(DB_NAME, 1);
+      request.onupgradeneeded = (e) => {
+        const idb = e.target.result;
+        if (!idb.objectStoreNames.contains(STORE_NAME)) {
+          idb.createObjectStore(STORE_NAME);
+        }
+      };
+      request.onsuccess = (e) => {
         const idb = e.target.result;
         const store = idb.transaction(STORE_NAME, 'readwrite').objectStore(STORE_NAME);
         store.put(data, 'latest_draft');
       };
-      tx.onerror = (e) => {
+      request.onerror = (e) => {
         console.warn('終了時の緊急バックアップがブラウザに拒否されました');
       };
     } catch (e) {
