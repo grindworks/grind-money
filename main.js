@@ -280,6 +280,9 @@ function handlePlainTextPaste(event) {
   selection.deleteFromDocument();
   selection.getRangeAt(0).insertNode(document.createTextNode(cleanText));
   selection.collapseToEnd();
+
+  // 【追加】 手動でイベントを発火させ、setDirty(true) を確実にトリガーする
+  event.target.dispatchEvent(new Event('input', { bubbles: true }));
 }
 
 // --- 暗号化ロジック (Web Crypto API) ---
@@ -2382,12 +2385,12 @@ function updateOrCreateBlockElement(block, existingEl = null) {
             <input type="date" class="${dateInputClass}" value="${defaultDate}" oninput="setDirty(true); checkFutureDate(this)">
             <button type="button" onclick="adjustDate(this, 1)" aria-label="1日進める" class="text-slate-400 hover:text-slate-800 w-8 h-8 flex items-center justify-center font-bold cursor-pointer outline-none transition-colors touch-manipulation" title="+1日">+</button>
           </div>
-          <input type="text" placeholder="科目" value="${escapeHtml(defaultAccount)}" list="account-suggestions" oninput="setDirty(true)" onfocus="this.select()" onkeydown="if(event.key==='Enter'){ if(event.isComposing){ return; } event.preventDefault();this.closest('form').querySelector('.item-memo').focus();}" class="item-account bg-transparent border-0 focus:ring-0 p-0 text-slate-600 placeholder-slate-400 w-20 shrink-0 text-sm outline-none text-center" style="min-width: 60px;">
+          <input type="text" placeholder="科目" value="${escapeHtml(defaultAccount)}" list="account-suggestions" oninput="setDirty(true)" onfocus="this.select()" onkeydown="if(event.key==='Enter'){ if(event.isComposing){ event.preventDefault(); return false; } event.preventDefault();this.closest('form').querySelector('.item-memo').focus();}" class="item-account bg-transparent border-0 focus:ring-0 p-0 text-slate-600 placeholder-slate-400 w-20 shrink-0 text-sm outline-none text-center" style="min-width: 60px;">
         </div>
 
         <div class="flex items-center gap-2 sm:gap-3 w-full sm:w-auto sm:flex-1 pl-6 sm:pl-0 mt-2 sm:mt-0">
-          <input type="text" placeholder="明細を追加..." list="memo-suggestions" oninput="setDirty(true)" onblur="autoSuggestAccount(this)" onfocus="if(window.innerWidth < 640) { setTimeout(() => this.closest('form').scrollIntoView({ behavior: 'smooth', block: 'center' }), 300); }" onkeydown="if(event.key==='Enter'){ if(event.isComposing){ return; } event.preventDefault();this.closest('form').querySelector('.item-amount').focus();}" class="item-memo bg-transparent border-0 focus:ring-0 p-0 text-blue-950 placeholder-slate-400 flex-1 text-sm font-medium outline-none min-w-[100px]">
-          <input type="text" inputmode="decimal" placeholder="金額(数式OK)" class="item-amount bg-transparent border-0 focus:ring-0 p-0 text-right tabular-nums tracking-tight text-blue-950 placeholder-slate-400 w-24 sm:w-32 shrink-0 text-sm outline-none" style="min-width: 104px;" oninput="setDirty(true)" onfocus="if(window.innerWidth < 640) { setTimeout(() => this.closest('form').scrollIntoView({ behavior: 'smooth', block: 'center' }), 300); }" onkeydown="if(event.key==='Enter' && event.isComposing){ return; } else if(event.key==='Tab' && !event.shiftKey){ event.preventDefault(); this.closest('form').requestSubmit(); }" title="数式計算（+ - * /）が使えます">
+          <input type="text" placeholder="明細を追加..." list="memo-suggestions" oninput="setDirty(true)" onblur="autoSuggestAccount(this)" onfocus="if(window.innerWidth < 640) { setTimeout(() => this.closest('form').scrollIntoView({ behavior: 'smooth', block: 'center' }), 300); }" onkeydown="if(event.key==='Enter'){ if(event.isComposing){ event.preventDefault(); return false; } event.preventDefault();this.closest('form').querySelector('.item-amount').focus();}" class="item-memo bg-transparent border-0 focus:ring-0 p-0 text-blue-950 placeholder-slate-400 flex-1 text-sm font-medium outline-none min-w-[100px]">
+          <input type="text" inputmode="decimal" placeholder="金額(数式OK)" class="item-amount bg-transparent border-0 focus:ring-0 p-0 text-right tabular-nums tracking-tight text-blue-950 placeholder-slate-400 w-24 sm:w-32 shrink-0 text-sm outline-none" style="min-width: 104px;" oninput="setDirty(true)" onfocus="if(window.innerWidth < 640) { setTimeout(() => this.closest('form').scrollIntoView({ behavior: 'smooth', block: 'center' }), 300); }" onkeydown="if(event.key==='Enter' && event.isComposing){ event.preventDefault(); return false; } else if(event.key==='Tab' && !event.shiftKey){ event.preventDefault(); this.closest('form').requestSubmit(); }" title="数式計算（+ - * /）が使えます">
         </div>
         <button type="submit" class="hidden">追加</button>
       </form>
@@ -4102,7 +4105,7 @@ document.addEventListener('keydown', (e) => {
   const key = e.key?.toLowerCase();
   if (!key) return; // キー情報が取得できない特殊なイベントは無視
 
-  if ((e.metaKey || e.ctrlKey) && key === 'k') {
+  if ((e.metaKey || e.ctrlKey) && (key === 'k' || key === 'ｋ' || e.code === 'KeyK')) {
     e.preventDefault();
     toggleCommandPalette();
     return;

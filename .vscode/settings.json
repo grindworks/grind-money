@@ -4,5 +4,6 @@
     "*.grind": "sqlite",
     "*.money": "sqlite"
   },
-  "css.lint.propertyIgnoredDueToDisplay": "ignore"
+  "css.lint.propertyIgnoredDueToDisplay": "ignore",
+  "tailwindCSS.lint.suggestCanonicalClasses": "ignore"
 }

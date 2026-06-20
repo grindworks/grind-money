@@ -1,5 +1,5 @@
 // 💡 アップデート時はここを v2, v3... と書き換えることで更新が発火します
-const CACHE_NAME = 'grindmoney-v20260619-15';
+const CACHE_NAME = 'grindmoney-v20260620-1';
 const urlsToCache = [
   './',
   './index.html',
@@ -89,7 +89,11 @@ self.addEventListener('fetch', (event) => {
           return networkResponse;
         } catch (error) {
           // ネットワークエラー（オフライン）で、キャッシュにもない場合のフォールバック
-          if (event.request.mode === 'navigate' || (event.request.headers.get('accept') && event.request.headers.get('accept').includes('text/html'))) {
+          if (
+            event.request.mode === 'navigate' ||
+            (event.request.headers.get('accept') &&
+              event.request.headers.get('accept').includes('text/html'))
+          ) {
             return await cache.match('./offline.html');
           }
         }
