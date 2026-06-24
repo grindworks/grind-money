@@ -194,8 +194,7 @@
 
           <!-- 暗号化パスワード入力 -->
           <form class="relative flex items-center" onsubmit="event.preventDefault(); saveGrindFile();">
-            <!-- アクセシビリティとパスワードマネージャーの警告回避のための隠しユーザー名フィールド -->
-            <input type="text" name="username" autocomplete="username" class="hidden" aria-hidden="true" value="grindmoney-user">
+
             <label for="file-password" class="sr-only">暗号化パスワード</label>
             <input type="password" id="file-password" placeholder="暗号化パスワード..." autocomplete="new-password"
               data-lpignore="true"
@@ -608,8 +607,7 @@
         </div>
         <form class="space-y-4 px-6 py-6" onsubmit="event.preventDefault();">
           <p id="password-prompt-message" class="text-slate-600 text-sm">ファイルは暗号化されています。解除パスワードを入力してください:</p>
-          <!-- アクセシビリティとパスワードマネージャーの警告回避のための隠しユーザー名フィールド -->
-          <input type="text" name="username" autocomplete="username" class="hidden" aria-hidden="true" value="grindmoney-user">
+
           <input type="password" id="password-prompt-input" aria-labelledby="password-prompt-message"
             class="bg-slate-50 px-4 py-2 border border-slate-200 focus:border-blue-600 rounded-md outline-none w-full text-blue-950 text-lg"
             autocomplete="new-password" data-lpignore="true">

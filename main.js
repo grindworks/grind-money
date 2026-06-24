@@ -919,22 +919,20 @@ window.createCollectionRecord = function (id) {
 
       // 💡 修正1: 科目コードから収入か支出(経費)かをスマート判定
       const acctCode = FREEWAY_CODE_MAP[account] || '';
-      if (
-        isIncome &&
+      const isDebitAccount = (
         account !== '売上高' &&
         account !== '雑収入' &&
         account !== '売掛金' &&
         account !== '未収入金' &&
-        account !== '前受金'
-      ) {
-        if (
-          acctCode.startsWith('8') ||
-          acctCode.startsWith('1') ||
-          acctCode.startsWith('2') ||
-          acctCode.startsWith('3')
-        ) {
-          isIncome = false; // 実質的な出金（経費や資産の購入など）とみなす
-        }
+        account !== '前受金' &&
+        (acctCode.startsWith('8') ||
+         acctCode.startsWith('1') ||
+         acctCode.startsWith('2') ||
+         acctCode.startsWith('3'))
+      );
+
+      if (isDebitAccount) {
+        isIncome = !isIncome;
       }
 
       const tag = isIncome ? '#入金' : '#支払';
@@ -1249,6 +1247,11 @@ function updateRecord(id, field, newValue, element) {
         tocItem.title = val || '名称未設定';
       }
     }
+
+    // 🌟 修正：タイピングを邪魔せずに、オートコンプリート用の辞書だけを裏で最新化する
+    if (field === 'memo') {
+      renderMemoSuggestions();
+    }
   }
 }
 
@@ -1429,7 +1432,11 @@ function toggleAllBlocks(collapse) {
 
   // ✅ View Transition API を使って、滑らかに一斉開閉させる
   if (document.startViewTransition) {
-    document.startViewTransition(() => renderData());
+    try {
+      document.startViewTransition(() => renderData());
+    } catch (e) {
+      renderData();
+    }
   } else {
     renderData();
   }
@@ -1548,7 +1555,11 @@ function handleDropdownChange() {
   window.currentActiveMonths = null;
   setActiveQuickPeriodButton(null);
   if (document.startViewTransition) {
-    document.startViewTransition(() => renderData());
+    try {
+      document.startViewTransition(() => renderData());
+    } catch (e) {
+      renderData();
+    }
   } else {
     renderData();
   }
@@ -1591,7 +1602,11 @@ function setPeriodFilter(val, btn = null) {
   if (select) {
     select.value = val;
     if (document.startViewTransition) {
-      document.startViewTransition(() => renderData());
+      try {
+        document.startViewTransition(() => renderData());
+      } catch (e) {
+        renderData();
+      }
     } else {
       renderData();
     }
@@ -1652,7 +1667,11 @@ function setMultiMonthFilter(monthArray, btn = null) {
   setActiveQuickPeriodButton(btn, true);
 
   if (document.startViewTransition) {
-    document.startViewTransition(() => renderData());
+    try {
+      document.startViewTransition(() => renderData());
+    } catch (e) {
+      renderData();
+    }
   } else {
     renderData();
   }
@@ -1667,7 +1686,11 @@ function setCalendarYearFilter(btn = null) {
   window.currentActiveMonths = months;
   setActiveQuickPeriodButton(btn);
   if (document.startViewTransition) {
-    document.startViewTransition(() => renderData());
+    try {
+      document.startViewTransition(() => renderData());
+    } catch (e) {
+      renderData();
+    }
   } else {
     renderData();
   }
@@ -1708,7 +1731,11 @@ function changeFiscalMonth() {
       } else {
         // その他のフィルター時でも、ドロップダウンや画面の再描画だけは行っておく
         if (document.startViewTransition) {
-          document.startViewTransition(() => renderData());
+          try {
+            document.startViewTransition(() => renderData());
+          } catch (e) {
+            renderData();
+          }
         } else {
           renderData();
         }
@@ -1744,7 +1771,11 @@ function setPreviousFiscalYearFilter(btn = null) {
   window.currentActiveMonths = months;
   setActiveQuickPeriodButton(btn || document.getElementById('prev-fiscal-year-btn'));
   if (document.startViewTransition) {
-    document.startViewTransition(() => renderData());
+    try {
+      document.startViewTransition(() => renderData());
+    } catch (e) {
+      renderData();
+    }
   } else {
     renderData();
   }
@@ -1774,7 +1805,11 @@ function setFiscalYearFilter(btn = null) {
   window.currentActiveMonths = months;
   setActiveQuickPeriodButton(btn || document.getElementById('fiscal-year-btn'));
   if (document.startViewTransition) {
-    document.startViewTransition(() => renderData());
+    try {
+      document.startViewTransition(() => renderData());
+    } catch (e) {
+      renderData();
+    }
   } else {
     renderData();
   }
@@ -3068,7 +3103,8 @@ function exportCSV(format = 'yayoi') {
       WHEN c.memo IS NOT NULL AND c.memo != '' THEN COALESCE(p.memo, '') || ' - ' || c.memo
       ELSE COALESCE(p.memo, '')
     END AS memo,
-    c.amount, c.created_at, c.account
+    c.amount, c.created_at, c.account,
+    c.memo AS child_memo
     FROM records c JOIN records p ON c.parent_id = p.id
     WHERE c.parent_id IS NOT NULL${whereClause} ORDER BY c.id ASC`;
 
@@ -3096,6 +3132,12 @@ function exportCSV(format = 'yayoi') {
     return `"${str.replace(/"/g, '""')}"`;
   }
 
+  function basicCsvCell(value) {
+    let str = value ? value.toString() : '';
+    str = str.replace(/\r?\n/g, ' ');
+    return `"${str.replace(/"/g, '""')}"`;
+  }
+
   let csvRows = [];
   if (format === 'freee') {
     csvRows.push(
@@ -3118,32 +3160,31 @@ function exportCSV(format = 'yayoi') {
     const absAmount = Math.abs(rawAmount); // 複式簿記のためマイナスを絶対値に変換
     let isIncome = rawAmount >= 0;
     const account = row[4] ? row[4].toString() : '雑費';
+    const childMemo = row[5] ? row[5].toString() : '';
     const escapedMemo = sanitizeCsvCell(memo);
 
     // 🌟 タグ判定による「発生」か「決済(消込)」かの判別
-    const isCollection = memo.includes('#入金') || memo.includes('#支払') || memo.includes('#決済');
+    const isCollection = childMemo.includes('#入金') || childMemo.includes('#支払') || childMemo.includes('#決済');
 
     // 「自動連携しているため決済行は出力しない」設定の場合はスキップ
     if (isCollection && !includeCollection) return;
 
-    // 🚨 デグレ修正: プラス入力された「費用」や「資産」を支出として扱うスマート反転
+    // 🚨 デグレ修正: プラス/マイナス入力された「費用」や「資産」の仕訳をスマート反転
     const acctCode = FREEWAY_CODE_MAP[account] || '';
-    if (
-      isIncome &&
+    const isDebitAccount = (
       account !== '売上高' &&
       account !== '雑収入' &&
       account !== '売掛金' &&
       account !== '未収入金' &&
-      account !== '前受金'
-    ) {
-      if (
-        acctCode.startsWith('8') ||
-        acctCode.startsWith('1') ||
-        acctCode.startsWith('2') ||
-        acctCode.startsWith('3')
-      ) {
-        isIncome = false; // 実質的な出金（経費や資産の購入）とみなす
-      }
+      account !== '前受金' &&
+      (acctCode.startsWith('8') ||
+       acctCode.startsWith('1') ||
+       acctCode.startsWith('2') ||
+       acctCode.startsWith('3'))
+    );
+
+    if (isDebitAccount) {
+      isIncome = !isIncome;
     }
 
     // 🌟 最終調整：空気を読む自動仕訳ロジック
@@ -3231,27 +3272,27 @@ function exportCSV(format = 'yayoi') {
     // 各フォーマットへの出力
     if (format === 'mf') {
       let cols = Array(17).fill('');
-      cols[0] = sanitizeCsvCell(id);
-      cols[1] = sanitizeCsvCell(sl);
+      cols[0] = basicCsvCell(id);
+      cols[1] = basicCsvCell(sl);
       cols[2] = escDebit;
-      cols[5] = sanitizeCsvCell('対象外');
+      cols[5] = basicCsvCell('対象外');
       cols[6] = absAmount.toString();
       cols[8] = escCredit;
-      cols[11] = sanitizeCsvCell('対象外');
+      cols[11] = basicCsvCell('対象外');
       cols[12] = absAmount.toString();
       cols[14] = escapedMemo;
       csvRows.push(cols.join(','));
     } else if (format === 'yayoi') {
       let cols = Array(25).fill('');
       cols[0] = '2111';
-      cols[1] = sanitizeCsvCell(id); // ★ 伝票Noを指定（複合仕訳化による諸口表示を防止）
+      cols[1] = basicCsvCell(id); // ★ 伝票Noを指定（複合仕訳化による諸口表示を防止）
       cols[2] = '0';
-      cols[3] = sanitizeCsvCell(sl);
+      cols[3] = basicCsvCell(sl);
       cols[4] = escDebit;
-      cols[7] = sanitizeCsvCell('対象外');
+      cols[7] = basicCsvCell('対象外');
       cols[8] = absAmount.toString();
       cols[10] = escCredit;
-      cols[13] = sanitizeCsvCell('対象外');
+      cols[13] = basicCsvCell('対象外');
       cols[14] = absAmount.toString();
       cols[16] = escapedMemo;
       cols[19] = '0';
@@ -3270,16 +3311,16 @@ function exportCSV(format = 'yayoi') {
       csvRows.push(cols.join(','));
     } else if (format === 'freee') {
       let cols = Array(17).fill('');
-      cols[0] = isIncome ? sanitizeCsvCell('収入') : sanitizeCsvCell('支出');
-      cols[1] = sanitizeCsvCell(id);
-      cols[2] = sanitizeCsvCell(hy);
-      cols[5] = !isCollection ? sanitizeCsvCell(account) : sanitizeCsvCell('口座振替');
-      cols[6] = isIncome ? sanitizeCsvCell('対象外') : sanitizeCsvCell('課税仕入');
+      cols[0] = isIncome ? basicCsvCell('収入') : basicCsvCell('支出');
+      cols[1] = basicCsvCell(id);
+      cols[2] = basicCsvCell(hy);
+      cols[5] = !isCollection ? sanitizeCsvCell(account) : basicCsvCell('口座振替');
+      cols[6] = isIncome ? basicCsvCell('対象外') : basicCsvCell('課税仕入');
       cols[7] = absAmount.toString();
-      cols[8] = sanitizeCsvCell('税込');
+      cols[8] = basicCsvCell('税込');
       cols[10] = escapedMemo;
       if (isCollection) {
-        cols[14] = sanitizeCsvCell(hy); // 決済日
+        cols[14] = basicCsvCell(hy); // 決済日
         cols[15] = sanitizeCsvCell(account); // 決済口座
         cols[16] = absAmount.toString();
       }
@@ -3287,8 +3328,8 @@ function exportCSV(format = 'yayoi') {
     } else if (format === 'generic') {
       csvRows.push(
         [
-          sanitizeCsvCell(id),
-          sanitizeCsvCell(sl),
+          basicCsvCell(id),
+          basicCsvCell(sl),
           escDebit,
           escCredit,
           absAmount.toString(),
@@ -3438,10 +3479,10 @@ function updateCSVPreview() {
   const firstRow = pendingCSVData.length > 0 ? pendingCSVData[0] : [];
 
   const oldVals = {
-    date: mapDate.value,
-    account: mapAccount ? mapAccount.value : '-1',
-    memo: mapMemo.value,
-    amount: mapAmount.value,
+    date: mapDate.value || '-1',
+    account: mapAccount ? (mapAccount.value || '-1') : '-1',
+    memo: mapMemo.value || '-1',
+    amount: mapAmount.value || '-1',
   };
 
   let defaultDate = oldVals.date;
@@ -4140,13 +4181,14 @@ document.addEventListener('keydown', (e) => {
     // モーダルやパレットが開いていれば閉じる
     // 💡 Gold-Rank: 2段階クローズ（文字がある場合はクリア、空なら閉じる）
     if (isCommandPaletteOpen) {
-      toggleCommandPalette();
       const input = document.getElementById('cmd-input');
       if (input.value !== '') {
+        // 文字がある場合はクリアするだけ（パレットは開いたまま）
         input.value = '';
         selectedCommandIndex = 0;
         renderCommandList('');
       } else {
+        // 空の場合はパレットを閉じる
         toggleCommandPalette();
       }
       return;
