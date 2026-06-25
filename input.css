@@ -22,6 +22,7 @@
 /* 1. クラス名の抽出対象ファイルを明示的に指定 */
 @source "./index.html";
 @source "./main.js";
+@source "../footer.js";
 
 /* --- カスタムキーフレーム定義 --- */
 
