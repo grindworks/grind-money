@@ -1,5 +1,5 @@
 // 💡 アップデート時はここを v2, v3... と書き換えることで更新が発火します
-const CACHE_NAME = 'grindmoney-v20260625-2';
+const CACHE_NAME = 'grindmoney-v20260625-3';
 const urlsToCache = [
   './',
   './index.html',
@@ -61,8 +61,8 @@ self.addEventListener('fetch', (event) => {
       const fetchAndCache = async () => {
         try {
           const networkResponse = await fetch(event.request);
-          // 正常なレスポンスの場合、キャッシュを更新
-          if (networkResponse && networkResponse.status === 200) {
+          // 正常なレスポンス、または外部ドメインからの不透明なレスポンス(Opaque)の場合、キャッシュを更新
+          if (networkResponse && (networkResponse.status === 200 || networkResponse.type === 'opaque')) {
             await cache.put(event.request, networkResponse.clone());
           }
           return networkResponse;
