@@ -8,12 +8,11 @@ const urlsToCache = [
   './icon-192.png',
   './icon-512.png',
   './manifest.json',
+  './assets/sql-wasm.js',
+  './assets/sql-wasm.wasm',
 ];
 
-const externalUrlsToCache = [
-  'https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.8.0/sql-wasm.js',
-  'https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.8.0/sql-wasm.wasm',
-];
+
 
 // インストール時にキャッシュを作成
 self.addEventListener('install', (event) => {
@@ -23,31 +22,9 @@ self.addEventListener('install', (event) => {
   event.waitUntil(
     caches.open(CACHE_NAME).then(async (cache) => {
       // ローカルファイルは通常通り一括追加
-      await cache.addAll(urlsToCache);
-      // 外部CDNファイルはCORS対応のため cors で個別に追加
-      for (const url of externalUrlsToCache) {
-        try {
-          // まずCORSモードで取得を試みる
-          let request = new Request(url, { mode: 'cors' });
-          let response;
-          try {
-            response = await fetch(request);
-          } catch (e) {
-            // CORSエラーなどで弾かれた場合は、no-corsモードで不透明(Opaque)レスポンスとして取得
-            request = new Request(url, { mode: 'no-cors' });
-            response = await fetch(request);
-          }
-          // 正常なレスポンス、または不透明レスポンス(type === 'opaque')の場合はキャッシュする
-          if (response.ok || response.type === 'opaque') {
-            await cache.put(request, response);
-          } else {
-            throw new Error(`Asset fetch failed: ${response.status} for ${url}`);
-          }
-        } catch (error) {
-          console.warn('外部リソースのキャッシュをスキップしました:', url, error);
-          // 外部リソースの失敗でService Worker全体のインストールが中断しないよう、throwしない
-        }
-      }
+      await cache.addAll(urlsToCache.filter(url => !url.endsWith('.wasm')));
+      // WASMは個別にキャッシュ（失敗してもService Worker自体は止めない）
+      cache.add('./assets/sql-wasm.wasm').catch(() => console.warn("WASM cache failed."));
     }),
   );
 });
