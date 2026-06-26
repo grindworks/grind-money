@@ -8,7 +8,6 @@ const urlsToCache = [
   './icon-192.png',
   './icon-512.png',
   './manifest.json',
-  '../footer.js',
 ];
 
 const externalUrlsToCache = [
