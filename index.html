@@ -1,20 +1,99 @@
 <!doctype html>
 <html lang="ja" class="scroll-pt-[220px] scroll-smooth sm:scroll-pt-[240px]">
   <head>
+    <!-- Anti-Clickjacking Frame Buster -->
+    <style id="antiClickjack">body{display:none !important;}</style>
+    <script>
+      if (self === top) {
+        var antiClickjack = document.getElementById("antiClickjack");
+        antiClickjack.parentNode.removeChild(antiClickjack);
+      } else {
+        top.location = self.location;
+      }
+    </script>
     <meta charset="UTF-8" />
     <meta
       name="viewport"
       content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"
     />
+    <!-- Robots Meta Tag for Max Indexing -->
+    <meta name="robots" content="index, follow, max-snippet:-1, max-image-preview:large, max-video-preview:-1" />
     <title>GrindMoney - Serverless Edition</title>
 
     <!-- OSのステータスバー色 -->
     <meta id="meta-theme-color" name="theme-color" content="#f8fafc" />
 
+    <!-- JSON-LD Structured Data for AI & Search Engines -->
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@graph": [
+          {
+            "@type": "SoftwareApplication",
+            "@id": "https://grindsite.com/tools/money/#software",
+            "name": "GrindMoney",
+            "url": "https://grindsite.com/tools/money/",
+            "operatingSystem": "Any",
+            "applicationCategory": "BusinessApplication",
+            "description": "ブラウザ上で完全に動作する、安全でサーバーレス、オフラインファーストな会計・キャッシュ管理ハブ。WebAssembly SQLite とクライアントサイドの AES-256-GCM 暗号化を使用。",
+            "browserRequirements": "Requires a modern web browser with WebAssembly support (Chrome, Edge, Safari, Firefox). File System Access API is recommended.",
+            "offers": {
+              "@type": "Offer",
+              "price": "0.00",
+              "priceCurrency": "JPY"
+            },
+            "author": {
+              "@type": "Organization",
+              "@id": "https://grindsite.com/#organization"
+            },
+            "featureList": [
+              "WebAssembly によるブラウザ内完結のサーバーレス SQLite データベース",
+              "強力なクライアントサイド AES-256-GCM 暗号化 (Web Crypto API)",
+              "SaaS サブスクリプション費用ゼロ、完全なデータ主権",
+              "オフラインファーストの PWA サポート",
+              "自動提案機能付きのカスタマイズ可能な勘定科目辞書",
+              "日本円対応および数式パース機能",
+              "ハッシュタグによるプロジェクト別集計機能",
+              "CSV エクスポート機能"
+            ]
+          },
+          {
+            "@type": "Organization",
+            "@id": "https://grindsite.com/#organization",
+            "name": "GrindSite",
+            "url": "https://grindsite.com",
+            "logo": "https://grindsite.com/logo.png"
+          },
+          {
+            "@type": "FAQPage",
+            "@id": "https://grindsite.com/tools/money/#faq",
+            "mainEntity": [
+              {
+                "@type": "Question",
+                "name": "Where is my accounting data stored?",
+                "acceptedAnswer": {
+                  "@type": "Answer",
+                  "text": "GrindMoney uses a local-first architecture. Your data is stored exclusively on your local device as a SQLite (.money) file via the File System Access API. It is never uploaded to any cloud server."
+                }
+              },
+              {
+                "@type": "Question",
+                "name": "Is GrindMoney secure?",
+                "acceptedAnswer": {
+                  "@type": "Answer",
+                  "text": "Yes. Before saving, your database is strongly encrypted locally using AES-256-GCM via the Web Crypto API. Without your password, the data is completely inaccessible."
+                }
+              }
+            ]
+          }
+        ]
+      }
+    </script>
+
     <!-- Content Security Policy (CSP) -->
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval' 'unsafe-eval' https://cdnjs.cloudflare.com https://grindsite.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; connect-src 'self' https://cdnjs.cloudflare.com https://grindsite.com ws://127.0.0.1:* ws://localhost:*; img-src 'self' data:; object-src 'none'; base-uri 'none';"
+      content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval' 'unsafe-eval' https://grindsite.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; connect-src 'self' https://grindsite.com ws://127.0.0.1:* ws://localhost:*; img-src 'self' data:; object-src 'none'; base-uri 'none';"
     />
 
     <!-- Google Fonts (Inter + Noto Sans JP) -->
@@ -42,13 +121,49 @@
     <link rel="apple-touch-icon" href="icon-192.png" />
 
     <!-- Global Footer Script -->
-    <script src="https://grindsite.com/tools/footer.js" defer></script>
+    <script src="../footer.js" defer></script>
   </head>
 
   <body
     class="min-h-[100dvh] overscroll-none bg-slate-50 font-sans text-slate-900 antialiased transition-colors duration-300 selection:bg-blue-600/30"
     style="scrollbar-gutter: stable; overscroll-behavior: none"
   >
+    <!-- SEO Fallback for Crawlers -->
+    <noscript>
+      <article style="padding: 2rem; max-width: 800px; margin: 0 auto; font-family: sans-serif">
+        <header>
+          <h2>GrindMoney - Serverless Edition</h2>
+          <p>A secure, serverless, offline-first business accounting hub.</p>
+          <p lang="ja">
+            GrindMoneyは、サーバー不要・完全オフラインで動作するローカルファーストの会計アプリです。AES-256-GCM暗号化とWebAssembly
+            SQLiteを採用し、安全なデータ管理を実現します。
+          </p>
+        </header>
+        <section>
+          <h3>Key Features:</h3>
+          <ul>
+            <li>
+              <strong>Local-First:</strong> Runs entirely in your browser using WebAssembly SQLite. No
+              SaaS subscriptions, no servers.
+            </li>
+            <li>
+              <strong>Secure:</strong> Client-side AES-256-GCM encryption for your database files.
+            </li>
+            <li>
+              <strong>Offline Ready:</strong> Progressive Web App (PWA) support for full offline
+              functionality.
+            </li>
+            <li>
+              <strong>Features:</strong> CSV import/export, smart math expression parsing, and customizable account dictionary.
+            </li>
+          </ul>
+        </section>
+        <footer>
+          <p><em>Please enable JavaScript to use this web application.</em></p>
+        </footer>
+      </article>
+    </noscript>
+
     <!-- SVG Sprite (Heroicons) -->
     <svg
       aria-hidden="true"
@@ -391,12 +506,64 @@
             >
               ↓ アプリとしてインストール
             </button>
+            <form
+              id="password-form"
+              class="relative hidden lg:flex items-center"
+              data-action="prevent-submit"
+            >
+              <label for="file-password" class="sr-only">暗号化パスワード</label>
+              
+              <!-- 入力コンテナ -->
+              <div id="password-input-container" class="relative">
+                <input
+                  type="password"
+                  id="file-password"
+                  placeholder="暗号化パスワード..."
+                  autocomplete="new-password"
+                  data-lpignore="true"
+                  class="w-36 rounded-md border border-slate-200 bg-white py-2 pr-8 pl-3 text-sm text-blue-950 placeholder-slate-400 shadow-sm transition-all outline-none focus:border-blue-600"
+                  title="パスワードを入力すると保存時にファイルを強力に暗号化します"
+                />
+                <button
+                  type="button"
+                  id="btn-toggle-password"
+                  class="absolute top-1/2 right-2 -translate-y-1/2 text-slate-400 transition-colors hover:text-slate-600"
+                  title="パスワードの表示/非表示"
+                >
+                  <svg id="icon-eye-open" class="hidden h-4 w-4">
+                    <use href="#icon-eye"></use>
+                  </svg>
+                  <svg id="icon-eye-closed" class="h-4 w-4">
+                    <use href="#icon-eye-slash"></use>
+                  </svg>
+                </button>
+              </div>
+
+              <!-- 設定済みバッジ (初期非表示) -->
+              <div
+                id="password-set-badge"
+                class="hidden items-center gap-1.5 rounded-md border border-emerald-200 bg-emerald-50 py-1.5 px-3 shadow-sm"
+                title="ファイルは暗号化されて保存されます"
+              >
+                <svg class="h-3.5 w-3.5 text-emerald-600" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                  <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
+                </svg>
+                <span class="text-xs font-bold text-emerald-700 select-none tracking-tight">保護有効</span>
+                <button
+                  type="button"
+                  id="btn-clear-password"
+                  class="ml-1 text-emerald-500 hover:text-red-500 transition-colors cursor-pointer"
+                  title="パスワードを解除（次回保存時に平文になります）"
+                >
+                  <svg class="h-4 w-4"><use href="#icon-trash"></use></svg>
+                </button>
+              </div>
+            </form>
 
             <!-- 科目辞書選択 -->
             <label for="dict-select" class="sr-only">科目辞書を選択</label>
             <select
               id="dict-select"
-              onchange="changeAccountDict()"
               class="cursor-pointer rounded-md border border-slate-200 bg-white px-2 py-2 text-xs text-slate-700 shadow-sm transition-colors outline-none focus:border-blue-600"
               title="入力時にサジェストする科目辞書を選択"
             >
@@ -408,41 +575,10 @@
               <option value="freeway">辞書: フリーウェイ</option>
             </select>
 
-            <!-- 暗号化パスワード入力 -->
-            <form
-              class="relative flex items-center"
-              onsubmit="
-                event.preventDefault();
-                saveGrindFile();
-              "
-            >
-              <label for="file-password" class="sr-only">暗号化パスワード</label>
-              <input
-                type="password"
-                id="file-password"
-                placeholder="暗号化パスワード..."
-                autocomplete="new-password"
-                data-lpignore="true"
-                class="w-36 rounded-md border border-slate-200 bg-white py-2 pr-8 pl-3 text-sm text-blue-950 placeholder-slate-400 shadow-sm transition-all outline-none focus:border-blue-600"
-                title="パスワードを入力すると保存時にファイルを強力に暗号化します"
-              />
-              <button
-                type="button"
-                onclick="togglePasswordVisibility()"
-                class="absolute top-1/2 right-2 -translate-y-1/2 text-slate-400 transition-colors hover:text-slate-600"
-                title="パスワードの表示/非表示"
-              >
-                <svg id="icon-eye-open" class="hidden h-4 w-4">
-                  <use href="#icon-eye"></use>
-                </svg>
-                <svg id="icon-eye-closed" class="h-4 w-4">
-                  <use href="#icon-eye-slash"></use>
-                </svg>
-              </button>
-            </form>
+
 
             <button
-              onclick="loadGrindFile()"
+              id="btn-open-file"
               class="shrink-0 cursor-pointer rounded-md border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-600 shadow-sm transition-colors hover:bg-slate-100 hover:text-blue-950"
               title="開く"
             >
@@ -452,7 +588,6 @@
             </button>
             <button
               id="btn-save"
-              onclick="saveGrindFile()"
               class="relative shrink-0 cursor-pointer rounded-md border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-blue-950 shadow-sm transition-colors hover:bg-slate-100"
               title="保存"
             >
@@ -467,9 +602,8 @@
               </span>
             </button>
 
-            <!-- コマンドパレット呼び出しボタン -->
             <button
-              onclick="toggleCommandPalette()"
+              id="btn-cmd-palette"
               class="flex shrink-0 cursor-pointer items-center gap-2 rounded-md border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-600 shadow-sm transition-colors hover:bg-slate-100 hover:text-blue-950"
               title="コマンドパレットを開く"
             >
@@ -489,7 +623,6 @@
               id="csv-input"
               accept=".csv"
               class="hidden"
-              onchange="importCSV(event)"
             />
           </div>
         </header>
@@ -543,7 +676,6 @@
                 </label>
                 <select
                   id="period-filter"
-                  onchange="handleDropdownChange()"
                   class="w-full cursor-pointer appearance-none bg-transparent pr-6 text-xl font-extrabold text-slate-800 transition-colors outline-none hover:text-blue-600 sm:w-auto sm:text-2xl"
                 >
                   <option value="all">すべての期間</option>
@@ -561,7 +693,6 @@
                 <div class="mb-1 flex items-center gap-3">
                   <!-- 修正: スクロール追従型のミニ保存ボタン (ラベルと横並びにして被りを防止) -->
                   <button
-                    onclick="saveGrindFile()"
                     id="floating-save-btn"
                     class="animate-modal-in z-50 hidden items-center gap-1.5 rounded-full bg-blue-600 px-3 py-1 text-[11px] font-bold text-white shadow-sm transition-all hover:bg-blue-700 active:scale-95"
                   >
@@ -598,7 +729,7 @@
               class="flex flex-wrap items-center gap-2 border-t border-slate-200/50 pt-3 transition-all"
             >
               <button
-                onclick="setPeriodFilter('all', this)"
+                data-action="setPeriodFilter" data-period="all"
                 data-active-classes="!bg-slate-700 !text-white !border-slate-700"
                 class="cursor-pointer rounded border border-slate-200 bg-slate-200 px-2 py-1 text-[10px] font-bold text-slate-700 uppercase shadow-sm transition-colors hover:border-slate-700 hover:bg-slate-700 hover:text-white"
               >
@@ -606,28 +737,28 @@
               </button>
               <div class="mx-0.5 h-4 w-px bg-slate-200"></div>
               <button
-                onclick="setMultiMonthFilter([1, 2, 3], this)"
+                data-action="setMultiMonthFilter" data-months="1,2,3"
                 data-active-classes="!bg-blue-600 !text-white !border-blue-600"
                 class="cursor-pointer rounded border border-blue-100 bg-blue-50 px-2 py-1 text-[10px] font-bold text-blue-600 shadow-sm transition-colors hover:border-blue-600 hover:bg-blue-600 hover:text-white"
               >
                 1-3月
               </button>
               <button
-                onclick="setMultiMonthFilter([4, 5, 6], this)"
+                data-action="setMultiMonthFilter" data-months="4,5,6"
                 data-active-classes="!bg-blue-600 !text-white !border-blue-600"
                 class="cursor-pointer rounded border border-blue-100 bg-blue-50 px-2 py-1 text-[10px] font-bold text-blue-600 shadow-sm transition-colors hover:border-blue-600 hover:bg-blue-600 hover:text-white"
               >
                 4-6月
               </button>
               <button
-                onclick="setMultiMonthFilter([7, 8, 9], this)"
+                data-action="setMultiMonthFilter" data-months="7,8,9"
                 data-active-classes="!bg-blue-600 !text-white !border-blue-600"
                 class="cursor-pointer rounded border border-blue-100 bg-blue-50 px-2 py-1 text-[10px] font-bold text-blue-600 shadow-sm transition-colors hover:border-blue-600 hover:bg-blue-600 hover:text-white"
               >
                 7-9月
               </button>
               <button
-                onclick="setMultiMonthFilter([10, 11, 12], this)"
+                data-action="setMultiMonthFilter" data-months="10,11,12"
                 data-active-classes="!bg-blue-600 !text-white !border-blue-600"
                 class="cursor-pointer rounded border border-blue-100 bg-blue-50 px-2 py-1 text-[10px] font-bold text-blue-600 shadow-sm transition-colors hover:border-blue-600 hover:bg-blue-600 hover:text-white"
               >
@@ -635,7 +766,7 @@
               </button>
               <div class="mx-0.5 h-4 w-px bg-slate-200"></div>
               <button
-                onclick="setCalendarYearFilter(this)"
+                data-action="setCalendarYearFilter"
                 data-active-classes="!bg-green-600 !text-white !border-green-600"
                 class="cursor-pointer rounded border border-green-100 bg-green-50 px-2 py-1 text-[10px] font-bold text-green-700 shadow-sm transition-colors hover:border-green-600 hover:bg-green-600 hover:text-white"
               >
@@ -644,7 +775,7 @@
               <div class="flex">
                 <button
                   id="prev-fiscal-year-btn"
-                  onclick="setPreviousFiscalYearFilter(this)"
+                  data-action="setPreviousFiscalYearFilter"
                   data-active-classes="!bg-purple-600 !text-white !border-purple-600"
                   class="cursor-pointer rounded-l border border-r-0 border-purple-100 bg-purple-50 px-2 py-1 text-[10px] font-bold text-purple-700 shadow-sm transition-colors hover:border-purple-600 hover:bg-purple-600 hover:text-white"
                 >
@@ -652,7 +783,7 @@
                 </button>
                 <button
                   id="fiscal-year-btn"
-                  onclick="setFiscalYearFilter(this)"
+                  data-action="setFiscalYearFilter"
                   data-active-classes="!bg-purple-600 !text-white !border-purple-600"
                   class="cursor-pointer border border-r-0 border-purple-100 bg-purple-50 px-2 py-1 text-[10px] font-bold text-purple-700 shadow-sm transition-colors hover:border-purple-600 hover:bg-purple-600 hover:text-white"
                 >
@@ -660,7 +791,7 @@
                 </button>
                 <button
                   id="fiscal-month-gear-btn"
-                  onclick="changeFiscalMonth()"
+                  data-action="changeFiscalMonth"
                   class="flex cursor-pointer items-center justify-center rounded-r border border-purple-100 bg-purple-50 px-2 py-1 text-purple-500 shadow-sm transition-colors hover:border-purple-600 hover:bg-purple-600 hover:text-white"
                   title="開始月を変更"
                 >
@@ -674,10 +805,7 @@
 
           <!-- トップレベルのブロック追加UI -->
           <form
-            onsubmit="
-              event.preventDefault();
-              addBlock();
-            "
+            data-action="prevent-submit-and-add-block"
             class="group relative mb-4"
           >
             <div class="pointer-events-none absolute inset-y-0 left-0 flex items-center">
@@ -690,14 +818,7 @@
             <input
               type="text"
               id="new-block-memo"
-              oninput="setDirty(true)"
-              placeholder="新しいブロックを作成 (例: 2026年5月 東京出張) ..."
-              onkeydown="
-                if (event.key === 'Enter' && event.isComposing) {
-                  event.preventDefault();
-                  return false;
-                }
-              "
+              data-action="handleNewBlockKeydown"
               class="w-full border-b-2 border-slate-200 bg-transparent py-4 pr-4 pl-10 text-2xl font-extrabold text-blue-950 placeholder-slate-400 transition-colors outline-none focus:border-blue-600"
             />
             <button type="submit" class="hidden">追加</button>
@@ -706,7 +827,7 @@
           <!-- 展開・折りたたみコントロール (データがない時は非表示) -->
           <div id="block-controls" class="mb-6 hidden items-center justify-end gap-4 pr-2">
             <button
-              onclick="toggleAllBlocks(false)"
+              data-action="toggleAllBlocks" data-open="false"
               class="flex cursor-pointer items-center gap-1 text-[11px] font-bold text-slate-400 transition-colors hover:text-slate-700 focus:text-blue-600 focus:outline-none"
             >
               <svg class="h-3.5 w-3.5">
@@ -715,7 +836,7 @@
               すべて展開
             </button>
             <button
-              onclick="toggleAllBlocks(true)"
+              data-action="toggleAllBlocks" data-open="true"
               class="flex cursor-pointer items-center gap-1 text-[11px] font-bold text-slate-400 transition-colors hover:text-slate-700 focus:text-blue-600 focus:outline-none"
             >
               <svg class="h-3.5 w-3.5 -rotate-90">
@@ -740,7 +861,7 @@
             必須ファイルが読み込めませんでした。<br />通信環境を確認し、ページを再読み込みしてください。
           </p>
           <button
-            onclick="location.reload()"
+            data-action="reloadPage"
             class="rounded-lg bg-blue-600 px-6 py-3 font-bold text-white shadow-sm transition-all hover:bg-blue-700 active:scale-95"
           >
             ページを再読み込み
@@ -761,17 +882,19 @@
     <!-- CSVマッピングモーダル -->
     <div
       id="csv-mapping-modal"
-      onclick="closeCSVModal()"
+      role="dialog"
+      aria-modal="true"
+      data-action="closeCSVModal"
       class="fixed inset-0 z-[100] hidden items-center justify-center bg-black/50 p-4 backdrop-blur-sm"
     >
       <div
-        onclick="event.stopPropagation()"
+        data-action="stopPropagation"
         class="animate-modal-in flex max-h-[90vh] w-full max-w-2xl flex-col rounded-xl border border-slate-200 bg-white shadow-2xl transition-colors"
       >
         <div class="flex shrink-0 items-center justify-between border-b border-slate-100 px-6 py-5">
           <h3 class="text-lg font-bold text-blue-950">CSVインポート設定</h3>
           <button
-            onclick="closeCSVModal()"
+            data-action="closeCSVModal"
             class="text-2xl leading-none text-slate-400 hover:text-slate-600"
           >
             &times;
@@ -786,7 +909,7 @@
               >
               <select
                 id="map-date"
-                onchange="renderCSVPreview()"
+                data-action="renderCSVPreview"
                 class="w-full rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-blue-950 outline-none focus:border-blue-600"
               ></select>
             </div>
@@ -796,7 +919,7 @@
               >
               <select
                 id="map-account"
-                onchange="renderCSVPreview()"
+                data-action="renderCSVPreview"
                 class="w-full rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-blue-950 outline-none focus:border-blue-600"
               ></select>
             </div>
@@ -806,7 +929,7 @@
               >
               <select
                 id="map-memo"
-                onchange="renderCSVPreview()"
+                data-action="renderCSVPreview"
                 class="w-full rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-blue-950 outline-none focus:border-blue-600"
               ></select>
             </div>
@@ -816,7 +939,7 @@
               >
               <select
                 id="map-amount"
-                onchange="renderCSVPreview()"
+                data-action="renderCSVPreview"
                 class="w-full rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-blue-950 outline-none focus:border-blue-600"
               ></select>
             </div>
@@ -842,7 +965,7 @@
               id="csv-skip-rows"
               value="1"
               min="0"
-              oninput="renderCSVPreview()"
+              data-action="renderCSVPreview"
               class="w-16 rounded-md border border-slate-200 bg-slate-50 px-2 py-1 text-center text-blue-950 outline-none focus:border-blue-600"
             />
             <span>行をスキップする</span>
@@ -851,7 +974,7 @@
             <label for="csv-encoding">文字コード:</label>
             <select
               id="csv-encoding"
-              onchange="updateCSVPreview()"
+              data-action="updateCSVPreview"
               class="w-auto rounded-md border border-slate-200 bg-slate-50 px-2 py-1 text-sm text-blue-950 outline-none focus:border-blue-600"
             >
               <option value="utf-8">UTF-8</option>
@@ -863,13 +986,13 @@
           class="flex shrink-0 justify-end space-x-3 border-t border-slate-100 bg-slate-50 px-6 py-4"
         >
           <button
-            onclick="closeCSVModal()"
+            data-action="closeCSVModal"
             class="rounded-md px-4 py-2 text-sm font-medium text-slate-600 transition-colors hover:bg-slate-200"
           >
             キャンセル
           </button>
           <button
-            onclick="executeCSVImport()"
+            data-action="executeCSVImport"
             class="rounded-md bg-blue-600 px-4 py-2 text-sm font-bold text-white shadow-sm transition-colors hover:bg-blue-700"
           >
             インポート実行
@@ -881,17 +1004,19 @@
     <!-- エクスポートモーダル -->
     <div
       id="export-modal"
-      onclick="closeExportModal()"
+      role="dialog"
+      aria-modal="true"
+      data-action="closeExportModal"
       class="fixed inset-0 z-[100] hidden items-center justify-center bg-black/50 p-4 backdrop-blur-sm"
     >
       <div
-        onclick="event.stopPropagation()"
+        data-action="stopPropagation"
         class="animate-modal-in w-full max-w-md overflow-hidden rounded-xl border border-slate-200 bg-white shadow-2xl transition-colors"
       >
         <div class="flex items-center justify-between border-b border-slate-100 px-6 py-5">
           <h3 class="text-lg font-bold text-blue-950">CSVエクスポート</h3>
           <button
-            onclick="closeExportModal()"
+            data-action="closeExportModal"
             class="text-2xl leading-none text-slate-400 hover:text-slate-600"
           >
             &times;
@@ -946,13 +1071,13 @@
         </div>
         <div class="flex justify-end space-x-3 border-t border-slate-100 bg-slate-50 px-6 py-4">
           <button
-            onclick="closeExportModal()"
+            data-action="closeExportModal"
             class="rounded-md px-4 py-2 text-sm font-medium text-slate-600 transition-colors hover:bg-slate-200"
           >
             キャンセル
           </button>
           <button
-            onclick="executeExport()"
+            data-action="executeExport"
             class="rounded-md bg-blue-600 px-4 py-2 text-sm font-bold text-white shadow-sm transition-colors hover:bg-blue-700"
           >
             エクスポート
@@ -964,11 +1089,13 @@
     <!-- ハッシュタグ集計モーダル -->
     <div
       id="tag-modal"
-      onclick="closeTagModal()"
+      role="dialog"
+      aria-modal="true"
+      data-action="closeTagModal"
       class="fixed inset-0 z-[100] hidden items-center justify-center bg-black/50 p-4 backdrop-blur-sm"
     >
       <div
-        onclick="event.stopPropagation()"
+        data-action="stopPropagation"
         class="animate-modal-in flex max-h-[90vh] w-full max-w-2xl flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-2xl transition-colors"
       >
         <div
@@ -988,7 +1115,7 @@
               >¥0</span
             >
             <button
-              onclick="closeTagModal()"
+              data-action="closeTagModal"
               class="text-3xl leading-none text-slate-400 transition-colors hover:text-slate-600"
             >
               &times;
@@ -1008,17 +1135,19 @@
     <!-- カスタム科目辞書編集モーダル -->
     <div
       id="account-dict-editor-modal"
-      onclick="closeAccountDictEditor()"
+      role="dialog"
+      aria-modal="true"
+      data-action="closeAccountDictEditor"
       class="fixed inset-0 z-[100] hidden items-center justify-center bg-black/50 p-4 backdrop-blur-sm"
     >
       <div
-        onclick="event.stopPropagation()"
+        data-action="stopPropagation"
         class="animate-modal-in flex max-h-[80vh] w-full max-w-md flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-2xl transition-colors"
       >
         <div class="flex shrink-0 items-center justify-between border-b border-slate-100 px-6 py-5">
           <h3 class="text-lg font-bold text-blue-950">カスタム科目辞書の編集</h3>
           <button
-            onclick="closeAccountDictEditor()"
+            data-action="closeAccountDictEditor"
             class="text-2xl leading-none text-slate-400 hover:text-slate-600"
           >
             &times;
@@ -1032,14 +1161,14 @@
             <div class="flex shrink-0 flex-col gap-2">
               <button
                 type="button"
-                onclick="setAllCustomAccountsHidden(false)"
+                data-action="setAllCustomAccountsHidden" data-hidden="false"
                 class="rounded-md bg-blue-50 px-2 py-1 text-[11px] font-bold text-blue-600 transition-colors hover:text-blue-700"
               >
                 すべて表示
               </button>
               <button
                 type="button"
-                onclick="setAllCustomAccountsHidden(true)"
+                data-action="setAllCustomAccountsHidden" data-hidden="true"
                 class="rounded-md bg-slate-100 px-2 py-1 text-[11px] font-bold text-slate-600 transition-colors hover:text-blue-950"
               >
                 すべて非表示
@@ -1071,13 +1200,13 @@
           class="flex shrink-0 justify-end space-x-3 border-t border-slate-100 bg-slate-50 px-6 py-4"
         >
           <button
-            onclick="closeAccountDictEditor()"
+            data-action="closeAccountDictEditor"
             class="rounded-md px-4 py-2 text-sm font-medium text-slate-600 transition-colors hover:bg-slate-200"
           >
             キャンセル
           </button>
           <button
-            onclick="saveCustomDictAndClose()"
+            data-action="saveCustomDictAndClose"
             class="rounded-md bg-blue-600 px-4 py-2 text-sm font-bold text-white shadow-sm transition-colors hover:bg-blue-700"
           >
             保存して閉じる
@@ -1089,7 +1218,9 @@
     <!-- パスワード入力モーダル (prompt代替) -->
     <div
       id="password-prompt-modal"
-      class="fixed inset-0 z-[200] hidden items-center justify-center bg-black/50 p-4 backdrop-blur-sm"
+      role="dialog"
+      aria-modal="true"
+      class="animate-modal-overlay fixed inset-0 z-[100] hidden items-center justify-center bg-black/20 p-4 backdrop-blur-sm"
     >
       <div
         class="animate-modal-in flex w-full max-w-sm flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-2xl"
@@ -1097,7 +1228,7 @@
         <div class="border-b border-slate-100 px-6 py-5">
           <h3 class="text-lg font-bold text-blue-950">パスワードの入力</h3>
         </div>
-        <form class="space-y-4 px-6 py-6" onsubmit="event.preventDefault()">
+        <form class="space-y-4 px-6 py-6" data-action="prevent-submit">
           <p id="password-prompt-message" class="text-sm text-slate-600">
             ファイルは暗号化されています。解除パスワードを入力してください:
           </p>
@@ -1152,12 +1283,14 @@
 
     <div
       id="cmd-palette"
-      onclick="toggleCommandPalette()"
+      role="dialog"
+      aria-modal="true"
+      data-action="toggleCommandPalette"
       class="animate-modal-overlay fixed inset-0 z-[100] hidden items-start justify-center bg-black/20 p-4 pt-[15vh] backdrop-blur-sm transition-opacity"
     >
       <!-- Raycastスタイルのモーダル -->
       <div
-        onclick="event.stopPropagation()"
+        data-action="stopPropagation"
         class="animate-modal-in flex w-full max-w-2xl flex-col overflow-hidden rounded-xl bg-white/80 shadow-2xl ring-1 ring-slate-200 backdrop-blur-3xl transition-all"
       >
         <div class="relative flex items-center gap-3 border-b border-slate-200/50 p-4">
@@ -1190,36 +1323,6 @@
 
     <!-- JavaScriptを外部ファイルとして読み込む -->
     <script src="main.js" defer></script>
-    <script>
-      // PWAのためのService Workerを登録
-      if ('serviceWorker' in navigator) {
-        window.addEventListener('load', () => {
-          navigator.serviceWorker.register('./sw.js').then(
-            (registration) => {
-              console.log('ServiceWorker registration successful with scope: ', registration.scope);
-            },
-            (err) => {
-              console.log('ServiceWorker registration failed: ', err);
-            },
-          );
 
-          // 💡 sw.js側で self.skipWaiting() が呼ばれ、コントロールが切り替わった瞬間に発火する
-          let refreshing = false;
-          navigator.serviceWorker.addEventListener('controllerchange', () => {
-            if (!refreshing) {
-              refreshing = true;
-              // 共通のトースト関数を呼び出して、レスポンシブかつ永続的な通知を表示
-              if (typeof showToast === 'function') {
-                const message = `アプリが最新版に更新されました。<a href="#" onclick="location.reload(); return false;" class="ml-2 font-bold underline cursor-pointer">リロードして適用</a>`;
-                showToast(message, '<span class="text-blue-400">✨</span>', {
-                  duration: Infinity,
-                  rawHtml: true,
-                });
-              }
-            }
-          });
-        });
-      }
-    </script>
   </body>
 </html>

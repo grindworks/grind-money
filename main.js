@@ -1,20 +1,27 @@
-let db = null; // SQLiteデータベースのインスタンス
-let SQL = null; // sql.jsのモジュール
-let fileHandle = null; // File System Access APIのファイルハンドル
-let isDirty = false; // 未保存の変更があるかどうか
-let pendingCSVData = []; // CSVパース結果の一時保存
-let lastUsedDates = {}; // ブロックごとの最終使用日付を記憶
-let lastUsedAccounts = {}; // ブロックごとの最終使用科目を記憶
-let pendingCSVBuffer = null; // CSVのバイナリデータ
-let currentDisplayedTotal = 0; // カウントアップ用
-let collapsedBlocks = new Set(); // 折りたたまれたブロックのIDを記憶
-let totalAnimationId = null; // アニメーションの多重起動防止用ID
-let draftTimer = null; // ドラフト自動保存用タイマー
-let statusTimeoutId = null; // ステータスバー通知のタイマーID
-let isSaving = false; // 保存処理の多重実行防止フラグ
-let lastSavedPasswordHash = ''; // パスワードの変更・解除検知用（ハッシュ値で保持）
+let db = null; // SQLite database instance
 
-const isMac = navigator.platform.toUpperCase().indexOf('MAC') >= 0;
+// Common helper to get today's date string (YYYY-MM-DD)
+function getTodayString() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+let SQL = null; // sql.js module
+let fileHandle = null; // File System Access API file handle
+let isDirty = false; // Unsaved changes flag
+let pendingCSVData = []; // Temporary storage for CSV parsing
+let lastUsedDates = {}; // Remember last used date per block
+let lastUsedAccounts = {}; // Remember last used account per block
+let pendingCSVBuffer = null; // CSV binary data
+let currentDisplayedTotal = 0; // For count up animation
+let collapsedBlocks = new Set(); // Set of collapsed block IDs
+let totalAnimationId = null; // Prevent duplicate animations
+let draftTimer = null; // Auto-save draft timer
+let statusTimeoutId = null; // Status bar notification timer
+let isSaving = false; // Prevent concurrent saves flag
+let lastSavedPasswordHash = ''; // Track password changes via hash
+
+const isMac = /Mac|iPhone|iPad|iPod/i.test(navigator.userAgent);
 
 let customAccountDict = []; // カスタム科目辞書の配列
 
@@ -55,7 +62,7 @@ async function getPasswordHash(password) {
   const msgUint8 = new TextEncoder().encode(password);
   const hashBuffer = await crypto.subtle.digest('SHA-256', msgUint8);
   const hashArray = Array.from(new Uint8Array(hashBuffer));
-  return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+  return hashArray.map((b) => b.toString(16).padStart(2, '0')).join('');
 }
 
 // --- 自動バックアップ (IndexedDB) ロジック ---
@@ -86,8 +93,10 @@ async function saveDraft(uints) {
     const idb = await openDB();
     const tx = idb.transaction(STORE_NAME, 'readwrite');
     tx.objectStore(STORE_NAME).put(uints, 'latest_draft');
-    return new Promise((resolve) => {
+    return new Promise((resolve, reject) => {
       tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+      tx.onabort = () => reject(tx.error);
     });
   } catch (e) {
     console.error('Draft save failed', e);
@@ -123,34 +132,30 @@ function setDirty(state) {
   // 自動バックアップの実行 (10秒デバウンス: 入力が落ち着いたタイミングで実行)
   // ⚠️ タイマーのリセット処理は state の変化に関わらず毎回実行させる
   if (state && db) {
-    if (draftTimer) {
-      clearTimeout(draftTimer);
-    }
+    if (draftTimer) clearTimeout(draftTimer);
     draftTimer = setTimeout(async () => {
-      try {
-        if (!isDirty) return; // 【追加】タイマー発火時点でのキャンセル確認
+        try {
+          if (!isDirty) return; // Cancel if no longer dirty at timer execution
 
-        const password = document.getElementById('file-password').value;
+          // Prevent data leak: If it was previously encrypted but password is now empty, abort draft save
+          if (lastSavedPasswordHash !== '' && currentMasterKey === null) {
+            console.warn('Draft save aborted: Password removed from an encrypted session.');
+            return;
+          }
+          let data = db.export();
+          if (currentMasterKey) {
+            data = await encryptData(data, currentMasterKey);
+          }
 
-        // 🚨 修正: 元々暗号化されていたのにパスワードが空の場合は、情報漏洩を防ぐためドラフト保存を中止する
-        if (lastSavedPasswordHash !== '' && password === '') {
-          console.warn('暗号化解除状態でのオートセーブをブロックしました。');
-          return;
+          if (!isDirty) return; // Discard if manually saved during async execution
+
+          await saveDraft(data);
+        } catch (e) {
+          console.error('Draft save failed', e);
+        } finally {
+          draftTimer = null; // 保存完了後にタイマーを解放
         }
-        let data = db.export();
-        if (password) {
-          data = await encryptData(data, password);
-        }
-
-        if (!isDirty) return; // 【追加】非同期処理中に手動保存された場合は破棄する
-
-        await saveDraft(data);
-      } catch (e) {
-        console.error('Draft save failed', e);
-      } finally {
-        draftTimer = null; // 保存完了後にタイマーを解放
-      }
-    }, 10000);
+      }, 10000);
   } else if (!state) {
     if (draftTimer) {
       clearTimeout(draftTimer);
@@ -277,27 +282,72 @@ function handlePlainTextPaste(event) {
 
   const selection = window.getSelection();
   if (!selection.rangeCount) return;
-  selection.deleteFromDocument();
-  selection.getRangeAt(0).insertNode(document.createTextNode(cleanText));
-  selection.collapseToEnd();
+  
+  const textNode = document.createTextNode(cleanText);
+  const range = selection.getRangeAt(0);
+  range.deleteContents();
+  range.insertNode(textNode);
+  
+  range.setStartAfter(textNode);
+  range.setEndAfter(textNode);
+  selection.removeAllRanges();
+  selection.addRange(range);
 
   // 【追加】 手動でイベントを発火させ、setDirty(true) を確実にトリガーする
   event.target.dispatchEvent(new Event('input', { bubbles: true }));
+}
+
+// --- セキュアなパスワード管理（メモリ上のみに保持） ---
+let currentMasterKey = null; // CryptoKey (extractable: false)
+let currentMasterKeyHash = ''; // string (SHA-256 hex)
+
+async function setMasterPassword(password) {
+  const pwInput = document.getElementById('file-password');
+  
+  if (!password) {
+    currentMasterKey = null;
+    currentMasterKeyHash = '';
+    if (pwInput) pwInput.value = '';
+    updatePasswordUI();
+    return;
+  }
+
+  const enc = new TextEncoder();
+  currentMasterKey = await window.crypto.subtle.importKey(
+    'raw',
+    enc.encode(password),
+    { name: 'PBKDF2' },
+    false, // メモリからの抽出不可
+    ['deriveKey']
+  );
+  currentMasterKeyHash = await getPasswordHash(password);
+  
+  // 即座にDOMから平文パスワードを消去
+  if (pwInput) pwInput.value = '';
+  updatePasswordUI();
+}
+
+function updatePasswordUI() {
+  const container = document.getElementById('password-input-container');
+  const badge = document.getElementById('password-set-badge');
+  if (!container || !badge) return;
+
+  if (currentMasterKey) {
+    container.classList.add('hidden');
+    badge.classList.remove('hidden');
+    badge.classList.add('flex');
+  } else {
+    container.classList.remove('hidden');
+    badge.classList.remove('flex');
+    badge.classList.add('hidden');
+  }
 }
 
 // --- 暗号化ロジック (Web Crypto API) ---
 const MAGIC_BYTES = new TextEncoder().encode('GRINDEN2'); // 最新仕様 (60万回)
 const MAGIC_BYTES_LEGACY = new TextEncoder().encode('GRINDENC'); // 過去仕様 (10万回)
 
-async function deriveKey(password, salt, iterations = 600000) {
-  const enc = new TextEncoder();
-  const keyMaterial = await window.crypto.subtle.importKey(
-    'raw',
-    enc.encode(password),
-    { name: 'PBKDF2' },
-    false,
-    ['deriveKey'],
-  );
+async function deriveKey(keyMaterial, salt, iterations = 600000) {
   return window.crypto.subtle.deriveKey(
     { name: 'PBKDF2', salt: salt, iterations: iterations, hash: 'SHA-256' },
     keyMaterial,
@@ -307,11 +357,11 @@ async function deriveKey(password, salt, iterations = 600000) {
   );
 }
 
-async function encryptData(data, password) {
+async function encryptData(data, keyMaterial) {
   const salt = window.crypto.getRandomValues(new Uint8Array(16));
   const iv = window.crypto.getRandomValues(new Uint8Array(12));
   // 新規暗号化時はOWASP推奨の60万回を使用
-  const key = await deriveKey(password, salt, 600000);
+  const key = await deriveKey(keyMaterial, salt, 600000);
   const encrypted = await window.crypto.subtle.encrypt({ name: 'AES-GCM', iv: iv }, key, data);
 
   const result = new Uint8Array(
@@ -324,7 +374,7 @@ async function encryptData(data, password) {
   return result;
 }
 
-async function decryptData(encryptedData, password) {
+async function decryptData(encryptedData, keyMaterial) {
   const magic = encryptedData.slice(0, 8);
   const magicStr = new TextDecoder().decode(magic);
   const isEncryptedV2 = magicStr === 'GRINDEN2';
@@ -337,12 +387,12 @@ async function decryptData(encryptedData, password) {
 
   try {
     if (isEncryptedV2) {
-      const key = await deriveKey(password, salt, 600000);
+      const key = await deriveKey(keyMaterial, salt, 600000);
       const decrypted = await window.crypto.subtle.decrypt({ name: 'AES-GCM', iv: iv }, key, data);
       return new Uint8Array(decrypted);
     } else {
       // Legacy (10万回仕様)
-      const legacyKey = await deriveKey(password, salt, 100000);
+      const legacyKey = await deriveKey(keyMaterial, salt, 100000);
       const decrypted = await window.crypto.subtle.decrypt(
         { name: 'AES-GCM', iv: iv },
         legacyKey,
@@ -429,8 +479,34 @@ async function initSQLite() {
       throw new Error('sql.js が読み込まれていません。通信環境またはCDNの障害が疑われます。');
     }
 
+    const wasmUrl = './assets/sql-wasm.wasm';
+    
+    let wasmBinaryData = null;
+    // 【エンタープライズ・ロックダウン対策】事前にWasmが実行可能か検証する
+    try {
+      const response = await fetch(wasmUrl);
+      wasmBinaryData = await response.arrayBuffer();
+      const isWasmSupported = await WebAssembly.validate(new Uint8Array(wasmBinaryData));
+      if (!isWasmSupported) throw new Error('WASM_INVALID');
+    } catch (e) {
+      document.body.innerHTML = `
+        <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;background-color:#f8fafc;color:#0f172a;font-family:sans-serif;padding:2rem;text-align:center;">
+          <h1 style="color:#ef4444;margin-bottom:1rem;font-size:2rem;">⚠️ Fatal System Error</h1>
+          <p style="font-size:1.1rem;margin-bottom:0.5rem;max-width:600px;">
+            Your browser environment explicitly blocks WebAssembly execution.<br>
+            This usually happens due to enterprise security policies, VPNs, or strict features like iOS "Lockdown Mode".
+          </p>
+          <p style="color:#64748b;font-size:0.95rem;max-width:500px;margin-top:1.5rem;">
+            GrindMoney requires WebAssembly to run the local SQLite database securely in your browser. 
+            Please disable Lockdown Mode or use a standard browser environment.
+          </p>
+        </div>
+      `;
+      throw new Error('WebAssembly execution is blocked by the environment (e.g. iOS Lockdown Mode). App aborted.');
+    }
+
     const config = {
-      locateFile: (filename) => `https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.8.0/${filename}`,
+      wasmBinary: new Uint8Array(wasmBinaryData),
     };
     SQL = await initSqlJs(config);
 
@@ -449,26 +525,28 @@ async function initSQLite() {
         const isEncrypted = magicStr === 'GRINDENC' || magicStr === 'GRINDEN2';
 
         if (isEncrypted) {
-          let password = document.getElementById('file-password').value;
+          let keyMaterial = currentMasterKey;
           let success = false;
           while (!success) {
             try {
-              Uints = await decryptData(Uints, password);
-              success = true;
-              if (password) {
-                document.getElementById('file-password').value = password;
-                lastSavedPasswordHash = await getPasswordHash(password);
+              if (!keyMaterial) {
+                throw new Error('Need password');
               }
+              Uints = await decryptData(Uints, keyMaterial);
+              success = true;
+              lastSavedPasswordHash = currentMasterKeyHash;
             } catch (err) {
-              password = await requestPasswordPrompt(
+              const promptPw = await requestPasswordPrompt(
                 'バックアップデータは暗号化されています。解除パスワードを入力してください:',
               );
-              if (password === null) {
+              if (promptPw === null) {
                 alert('起動をキャンセルしました。リロードしてやり直してください。');
                 document.body.innerHTML =
                   "<h1 style='text-align:center; margin-top:20vh;'>保護のため停止しました。<br>リロードしてください。</h1>";
                 return; // throw new Error(...) をやめて静かに停止する
               }
+              await setMasterPassword(promptPw);
+              keyMaterial = currentMasterKey;
             }
           }
         }
@@ -637,7 +715,24 @@ function evaluateMath(expr) {
       return String.fromCharCode(s.charCodeAt(0) - 0xfee0);
     });
     // 全角の「×」「÷」「ー」などを半角記号にマッピング
-    normalized = normalized.replace(/×/g, '*').replace(/÷/g, '/').replace(/[ー−△]/g, '-');
+    normalized = normalized
+      .replace(/×/g, '*')
+      .replace(/÷/g, '/')
+      .replace(/[ー−△]/g, '-');
+
+    normalized = normalized.replace(/(?:\d+[.,])+\d+/g, (match) => {
+      const lastComma = match.lastIndexOf(',');
+      const lastDot = match.lastIndexOf('.');
+      if (lastComma > lastDot && lastDot !== -1) return match.replace(/\./g, '').replace(/,/g, '.');
+      else if (lastDot > lastComma && lastComma !== -1) return match.replace(/,/g, '');
+      else if (lastComma !== -1) {
+        if (/,\d{3}$/.test(match)) return match.replace(/,/g, '');
+        else return match.replace(/,/g, '.');
+      } else {
+        if (match.match(/\./g) && match.match(/\./g).length > 1) return match.replace(/\./g, '');
+        return match;
+      }
+    });
 
     if (/^\([\d,.]+\)$/.test(normalized)) {
       normalized = '-' + normalized.replace(/[()]/g, '');
@@ -730,7 +825,7 @@ function evaluateMath(expr) {
     const result = evalStack[0];
 
     if (!isFinite(result) || isNaN(result)) return null;
-    const rounded = Math.round(result);
+    const rounded = Math.round(result + Number.EPSILON);
     if (rounded > 10000000000000 || rounded < -10000000000000) return null;
     return rounded;
   } catch (e) {
@@ -748,7 +843,7 @@ function addItem(parentId, memo, amount, dateStr, accountStr) {
 
   if (dateStr) {
     const today = new Date();
-    const todayStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+    const todayStr = getTodayString();
     if (dateStr > todayStr) {
       showToast('未来の日付で登録しました', '<span class="text-orange-400">⚠️</span>');
     }
@@ -912,24 +1007,23 @@ window.createCollectionRecord = function (id) {
 
       // 今日の日付を取得
       const today = new Date();
-      const dateStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')} 00:00:00`;
+      const dateStr = `${getTodayString()} 00:00:00`;
 
       const safeAmount = amount ? parseInt(amount, 10) : 0;
       let isIncome = safeAmount >= 0;
 
       // 💡 修正1: 科目コードから収入か支出(経費)かをスマート判定
       const acctCode = FREEWAY_CODE_MAP[account] || '';
-      const isDebitAccount = (
+      const isDebitAccount =
         account !== '売上高' &&
         account !== '雑収入' &&
         account !== '売掛金' &&
         account !== '未収入金' &&
         account !== '前受金' &&
         (acctCode.startsWith('8') ||
-         acctCode.startsWith('1') ||
-         acctCode.startsWith('2') ||
-         acctCode.startsWith('3'))
-      );
+          acctCode.startsWith('1') ||
+          acctCode.startsWith('2') ||
+          acctCode.startsWith('3'));
 
       if (isDebitAccount) {
         isIncome = !isIncome;
@@ -967,7 +1061,7 @@ window.createCollectionRecord = function (id) {
       const newId = res[0].values[0][0];
 
       setDirty(true);
-      renderData();
+      renderData(parent_id);
 
       showToast(
         '決済行を作成しました。日付と金額を調整してください',
@@ -1004,18 +1098,17 @@ function updateRecord(id, field, newValue, element) {
     return;
   }
 
-  let val = newValue.trim();
+  let val = (newValue || '').toString().replace(/\u00A0/g, ' ').trim();
   if (field === 'amount') {
     if (val === '') {
       val = null; // 空文字の場合は未入力(null)として扱う
     } else {
       // 表示時のカンマを除去してから数式評価
-      val = evaluateMath(val.replace(/,/g, ''));
+      val = evaluateMath(val);
       if (val === null) {
         alert('金額の入力、または数式が正しくありません。');
         if (element) {
           element.classList.add('!bg-red-100', '!text-red-600');
-          setTimeout(() => element.focus(), 10);
         }
         return;
       }
@@ -1078,7 +1171,7 @@ function updateRecord(id, field, newValue, element) {
 
     // 未来の日付チェック
     const today = new Date();
-    const todayStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')} 00:00:00`;
+    const todayStr = `${getTodayString()} 00:00:00`;
     if (val > todayStr) {
       showToast('未来の日付が入力されました', '<span class="text-orange-400">⚠️</span>');
     }
@@ -1128,9 +1221,9 @@ function updateRecord(id, field, newValue, element) {
       activeEl.hasAttribute('data-field') &&
       activeEl.hasAttribute('data-id')
     ) {
-      const field = activeEl.getAttribute('data-field');
-      const id = activeEl.getAttribute('data-id');
-      focusSelector = `[data-id="${id}"][data-field="${field}"]`;
+      const focusField = activeEl.getAttribute('data-field');
+      const focusId = activeEl.getAttribute('data-id');
+      focusSelector = `[data-id="${focusId}"][data-field="${focusField}"]`;
     } else if (activeEl.classList.contains('item-memo')) {
       const form = activeEl.closest('form');
       if (form) focusSelector = `#${form.id} .item-memo`;
@@ -1339,13 +1432,12 @@ function adjustDate(btn, days) {
   dateInput.value = `${yyyy}-${mm}-${dd}`;
 
   if (typeof checkFutureDate === 'function') checkFutureDate(dateInput);
-  setDirty(true);
 }
 
 // 未来の日付入力時に警告色にする
 function checkFutureDate(input) {
   const today = new Date();
-  const todayStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+  const todayStr = getTodayString();
   if (input.value > todayStr) {
     input.classList.add('text-red-600', 'font-bold', 'bg-red-50', 'rounded');
     input.classList.remove('text-slate-600', 'bg-transparent');
@@ -1431,15 +1523,7 @@ function toggleAllBlocks(collapse) {
   }
 
   // ✅ View Transition API を使って、滑らかに一斉開閉させる
-  if (document.startViewTransition) {
-    try {
-      document.startViewTransition(() => renderData());
-    } catch (e) {
-      renderData();
-    }
-  } else {
-    renderData();
-  }
+  renderData();
 }
 
 // --- 期間表示フォーマットの共通ヘルパー ---
@@ -1554,15 +1638,7 @@ function updatePeriodDropdown() {
 function handleDropdownChange() {
   window.currentActiveMonths = null;
   setActiveQuickPeriodButton(null);
-  if (document.startViewTransition) {
-    try {
-      document.startViewTransition(() => renderData());
-    } catch (e) {
-      renderData();
-    }
-  } else {
-    renderData();
-  }
+  renderData();
 }
 
 // クイックセレクターのアクティブ状態を更新
@@ -1601,15 +1677,7 @@ function setPeriodFilter(val, btn = null) {
   const select = document.getElementById('period-filter');
   if (select) {
     select.value = val;
-    if (document.startViewTransition) {
-      try {
-        document.startViewTransition(() => renderData());
-      } catch (e) {
-        renderData();
-      }
-    } else {
-      renderData();
-    }
+  renderData();
   }
 }
 
@@ -1666,15 +1734,7 @@ function setMultiMonthFilter(monthArray, btn = null) {
   // 🎯 第2引数を true にすることで「年度の紫・緑色」を消さずに「月ボタンの青色」を両立させる
   setActiveQuickPeriodButton(btn, true);
 
-  if (document.startViewTransition) {
-    try {
-      document.startViewTransition(() => renderData());
-    } catch (e) {
-      renderData();
-    }
-  } else {
-    renderData();
-  }
+  renderData();
 }
 
 // カレンダー年フィルター (1月〜12月: 個人事業主・12月決算向け)
@@ -1685,15 +1745,7 @@ function setCalendarYearFilter(btn = null) {
   for (let m = 1; m <= 12; m++) months.push(`${year}-${String(m).padStart(2, '0')}`);
   window.currentActiveMonths = months;
   setActiveQuickPeriodButton(btn);
-  if (document.startViewTransition) {
-    try {
-      document.startViewTransition(() => renderData());
-    } catch (e) {
-      renderData();
-    }
-  } else {
-    renderData();
-  }
+  renderData();
 }
 
 // 年度の開始月を更新するUI
@@ -1730,15 +1782,7 @@ function changeFiscalMonth() {
         setPreviousFiscalYearFilter(document.getElementById('prev-fiscal-year-btn'));
       } else {
         // その他のフィルター時でも、ドロップダウンや画面の再描画だけは行っておく
-        if (document.startViewTransition) {
-          try {
-            document.startViewTransition(() => renderData());
-          } catch (e) {
-            renderData();
-          }
-        } else {
-          renderData();
-        }
+  renderData();
       }
     } else {
       alert('1から12の数字を入力してください。');
@@ -1770,15 +1814,7 @@ function setPreviousFiscalYearFilter(btn = null) {
 
   window.currentActiveMonths = months;
   setActiveQuickPeriodButton(btn || document.getElementById('prev-fiscal-year-btn'));
-  if (document.startViewTransition) {
-    try {
-      document.startViewTransition(() => renderData());
-    } catch (e) {
-      renderData();
-    }
-  } else {
-    renderData();
-  }
+  renderData();
 }
 
 // 年度フィルター (設定された開始月から12ヶ月)
@@ -1804,15 +1840,7 @@ function setFiscalYearFilter(btn = null) {
 
   window.currentActiveMonths = months;
   setActiveQuickPeriodButton(btn || document.getElementById('fiscal-year-btn'));
-  if (document.startViewTransition) {
-    try {
-      document.startViewTransition(() => renderData());
-    } catch (e) {
-      renderData();
-    }
-  } else {
-    renderData();
-  }
+  renderData();
 }
 
 // 3. ブロック構造の描画
@@ -1901,6 +1929,7 @@ function renderData(focusBlockId = null) {
   if (tocContainer && tocList) {
     const prevScrollTop = tocContainer.scrollTop; // スクロール位置を記憶
     tocList.innerHTML = '';
+    tocContainer.querySelectorAll('.toc-tag-section').forEach(el => el.remove());
 
     filteredTree.forEach((block) => {
       const a = document.createElement('a');
@@ -1973,7 +2002,7 @@ function renderData(focusBlockId = null) {
                 指定された期間（フィルター）にはデータが存在しません。<br>フィルター条件を変更して再度お試しください。
               </p>
 
-              <button onclick="setPeriodFilter('all', null)" class="bg-white border border-slate-200 hover:bg-slate-100 text-slate-700 px-6 py-2.5 rounded-full text-sm font-bold shadow-sm transition-all active:scale-95">
+              <button data-action="setPeriodFilter" data-period="all" class="bg-white border border-slate-200 hover:bg-slate-100 text-slate-700 px-6 py-2.5 rounded-full text-sm font-bold shadow-sm transition-all active:scale-95">
                 すべての期間を表示
               </button>
            </div>
@@ -2019,10 +2048,10 @@ function renderData(focusBlockId = null) {
 
               <!-- ボタンから shadow-blue-500/30 などの光彩を削除し、shadow-sm に統一 -->
               <div class="flex flex-col sm:flex-row items-center gap-3">
-                <button onclick="const el = document.getElementById('new-block-memo'); el.focus(); el.scrollIntoView({behavior: 'smooth', block: 'center'});" class="bg-blue-600 hover:bg-blue-700 text-white px-6 py-3 rounded-full text-sm font-bold shadow-sm transition-all active:scale-95 flex items-center gap-2">
+                <button data-action="focusNewBlockMemo" class="bg-blue-600 hover:bg-blue-700 text-white px-6 py-3 rounded-full text-sm font-bold shadow-sm transition-all active:scale-95 flex items-center gap-2">
                   <span class="text-lg font-light leading-none mb-0.5">+</span> 新しいブロックを作る
                 </button>
-                <button onclick="document.getElementById('csv-input').click()" class="bg-white hover:bg-blue-50 text-blue-700 border border-blue-200 px-6 py-3 rounded-full text-sm font-bold shadow-sm transition-all active:scale-95 flex items-center gap-2">
+                <button data-action="clickCsvInput" class="bg-white hover:bg-blue-50 text-blue-700 border border-blue-200 px-6 py-3 rounded-full text-sm font-bold shadow-sm transition-all active:scale-95 flex items-center gap-2">
                   <svg class="w-4 h-4"><use href="#icon-import"></use></svg> CSVをインポート
                 </button>
               </div>
@@ -2066,8 +2095,8 @@ function renderData(focusBlockId = null) {
       }
 
       // メモ欄から「#タグ」を正規表現で抽出して集計（全角ハッシュタグも吸収）
-      const tags = (item.memo || '').match(/[#＃][^\s　,、。\.・()（）「」]+/g) || [];
-      const blockTags = (block.memo || '').match(/[#＃][^\s　,、。\.・()（）「」]+/g) || [];
+      const tags = (item.memo || '').match(/[#＃][^\s　,、。\.・()（）「」#＃]+/g) || [];
+      const blockTags = (block.memo || '').match(/[#＃][^\s　,、。\.・()（）「」#＃]+/g) || [];
       const rawTags = [...tags, ...blockTags].map((t) => t.replace('＃', '#'));
       const allTags = [...new Set(rawTags)]; // 重複排除と正規化
 
@@ -2101,7 +2130,7 @@ function renderData(focusBlockId = null) {
   if (tocContainer && Object.keys(tagTotals).length > 0) {
     const tagDivider = document.createElement('div');
     tagDivider.className =
-      'mt-8 font-bold text-slate-400 mb-2 px-2 uppercase text-[10px] tracking-widest flex items-center gap-1';
+      'toc-tag-section mt-8 font-bold text-slate-400 mb-2 px-2 uppercase text-[10px] tracking-widest flex items-center gap-1';
     tagDivider.innerHTML = `<svg class="w-3 h-3"><use href="#icon-folder"></use></svg> PROJECTS`;
     tocContainer.appendChild(tagDivider);
 
@@ -2264,12 +2293,12 @@ function updateOrCreateBlockElement(block, existingEl = null) {
       const dStr = item.created_at.split(' ')[0]; // "YYYY-MM-DD"
       const parts = dStr.split('-');
       if (parts.length === 3) {
-        yyyy = escapeHtml(parts[0]);
+        const displayYear = escapeHtml(parts[0]);
         const imm = escapeHtml(parts[1]);
         const idd = escapeHtml(parts[2]);
 
         // 年度判定バッジの生成
-        const itemYear = parseInt(yyyy, 10);
+        const itemYear = parseInt(parts[0], 10);
         const itemMonth = parseInt(imm, 10);
         let itemFiscalYear = itemYear;
         if (itemMonth < startMonth) itemFiscalYear--;
@@ -2295,7 +2324,7 @@ function updateOrCreateBlockElement(block, existingEl = null) {
             : ' text-slate-500 bg-slate-100 border-slate-200 focus:ring-blue-200 hover:bg-slate-200';
         }
 
-        dateDisp = `${badgeHtml}<span data-id="${item.id}" data-field="created_at" data-year="${yyyy}" contenteditable="true" oninput="setDirty(true)" onpaste="handlePlainTextPaste(event)" onkeydown="if(event.key==='Enter' && !event.isComposing){event.preventDefault();this.blur();}" onblur="updateRecord(${item.id}, 'created_at', this.innerText, this)" class="${dateClasses}" title="${dateTitle}">${imm}/${idd}</span>`;
+        dateDisp = `${badgeHtml}<span data-id="${item.id}" data-field="created_at" data-year="${displayYear}" contenteditable="true"    class="${dateClasses}" title="${dateTitle}">${imm}/${idd}</span>`;
       }
     }
 
@@ -2305,13 +2334,13 @@ function updateOrCreateBlockElement(block, existingEl = null) {
       ? 'text-slate-400 bg-transparent border-transparent hover:bg-slate-100 focus:bg-slate-100'
       : 'text-blue-600 bg-blue-50 border-blue-200 hover:bg-blue-100 focus:bg-blue-100';
 
-    let accountDisp = `<input type="text" data-id="${item.id}" data-field="account" list="account-suggestions" value="${escapeHtml(accStr)}" placeholder="科目" onfocus="this.select()" oninput="setDirty(true)" onkeydown="if(event.key==='Enter' && !event.isComposing){event.preventDefault();this.blur();}" onblur="updateRecord(${item.id}, 'account', this.value, this)" class="text-xs px-1.5 py-0.5 rounded mr-2 outline-none focus:ring-2 focus:ring-blue-400 cursor-text transition-colors w-[84px] sm:w-[100px] shrink-0 text-left placeholder-blue-300 border ${accClasses}">`;
+    let accountDisp = `<input type="text" data-id="${item.id}" data-field="account" list="account-suggestions" value="${escapeHtml(accStr)}" placeholder="科目"     class="text-xs px-1.5 py-0.5 rounded mr-2 outline-none focus:ring-2 focus:ring-blue-400 cursor-text transition-colors w-[84px] sm:w-[100px] shrink-0 text-left placeholder-blue-300 border ${accClasses}">`;
 
     // 決済ボタンの表示制御（すでに決済済みの行には表示しない）
     let checkBtnHtml = '';
     if (!isCollection) {
       checkBtnHtml = `
-        <button onclick="createCollectionRecord(${item.id})" aria-label="決済(回収・支払)済にする" class="text-slate-300 hover:text-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-200 rounded p-1.5 sm:p-2 -m-1 transition-colors cursor-pointer" title="この取引の「決済行」を自動生成する">
+        <button data-action="createCollectionRecord" data-id="${item.id}" aria-label="決済(回収・支払)済にする" class="text-slate-300 hover:text-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-200 rounded p-1.5 sm:p-2 -m-1 transition-colors cursor-pointer" title="この取引の「決済行」を自動生成する">
           <svg class="w-4 h-4 pointer-events-none"><use href="#icon-check-circle"></use></svg>
         </button>
       `;
@@ -2322,16 +2351,16 @@ function updateOrCreateBlockElement(block, existingEl = null) {
         <div class="flex items-center flex-1 min-w-0">
           ${dateDisp}
           ${accountDisp}
-          <span data-id="${item.id}" data-field="memo" contenteditable="true" oninput="setDirty(true)" onpaste="handlePlainTextPaste(event)" onkeydown="if(event.key==='Enter' && !event.isComposing){event.preventDefault();this.blur();}" onblur="updateRecord(${item.id}, 'memo', this.innerText, this)" class="${isCollection ? 'text-slate-500' : 'text-blue-950'} font-medium truncate outline-none focus:bg-blue-50 focus:ring-2 focus:ring-blue-200 px-1 rounded cursor-text transition-colors empty:inline-block empty:min-w-12 empty:bg-slate-100 empty:before:content-['✎_未入力'] empty:before:text-slate-400 empty:before:text-xs empty:before:font-normal empty:before:pointer-events-none empty:focus:before:opacity-50">${escapeHtml(item.memo)}</span>
+          <span data-id="${item.id}" data-field="memo" contenteditable="true"     class="${isCollection ? 'text-slate-500' : 'text-blue-950'} font-medium truncate outline-none focus:bg-blue-50 focus:ring-2 focus:ring-blue-200 px-1 rounded cursor-text transition-colors empty:inline-block empty:min-w-12 empty:bg-slate-100 empty:before:content-['✎_未入力'] empty:before:text-slate-400 empty:before:text-xs empty:before:font-normal empty:before:pointer-events-none empty:focus:before:opacity-50">${escapeHtml(item.memo)}</span>
         </div>
         <div class="flex items-center space-x-1.5 sm:space-x-4 ml-2 sm:ml-auto shrink-0">
-          <input type="text" data-id="${item.id}" data-field="amount" inputmode="decimal" placeholder="0" value="${item.amount !== null && item.amount !== '' && item.amount !== undefined ? jpyFormatter.format(item.amount) : ''}" oninput="setDirty(true)" onfocus="this.select()" onpaste="handlePlainTextPaste(event)" onkeydown="if(event.key==='Enter' && !event.isComposing){event.preventDefault();this.blur();}" onblur="updateRecord(${item.id}, 'amount', this.value, this)" class="bg-transparent border-0 p-0 font-medium tabular-nums tracking-tight ${isCollection ? 'text-slate-400' : 'text-blue-950'} text-right outline-none focus:bg-blue-50 focus:ring-2 focus:ring-blue-200 px-1 rounded cursor-text transition-colors w-[50px] sm:w-[80px]"><span class="text-slate-400 text-xs font-sans hidden sm:inline">円</span>
+          <input type="text" data-id="${item.id}" data-field="amount" inputmode="decimal" placeholder="0" value="${item.amount !== null && item.amount !== '' && item.amount !== undefined ? jpyFormatter.format(item.amount) : ''}"      class="bg-transparent border-0 p-0 font-medium tabular-nums tracking-tight ${isCollection ? 'text-slate-400' : 'text-blue-950'} text-right outline-none focus:bg-blue-50 focus:ring-2 focus:ring-blue-200 px-1 rounded cursor-text transition-colors w-[50px] sm:w-[80px]"><span class="text-slate-400 text-xs font-sans hidden sm:inline">円</span>
           <div class="flex items-center space-x-0.5 sm:space-x-1 md:opacity-0 md:group-hover/item:opacity-100 focus-within:opacity-100 transition-opacity">
             ${checkBtnHtml}
-            <button onclick="duplicateRecord(${item.id})" aria-label="複製" class="text-slate-300 hover:text-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-600/30 rounded p-1.5 sm:p-2 -m-1 transition-colors cursor-pointer" title="複製">
+            <button data-action="duplicateRecord" data-id="${item.id}" aria-label="複製" class="text-slate-300 hover:text-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-600/30 rounded p-1.5 sm:p-2 -m-1 transition-colors cursor-pointer" title="複製">
               <svg class="w-4 h-4 pointer-events-none"><use href="#icon-copy"></use></svg>
             </button>
-            <button onclick="deleteRecord(${item.id})" aria-label="削除" class="text-slate-300 hover:text-red-500 focus:outline-none focus:ring-2 focus:ring-red-200 rounded transition-colors text-xl sm:text-2xl leading-none p-1.5 sm:p-2 -m-1 cursor-pointer" title="削除">&times;</button>
+            <button data-action="deleteRecord" data-id="${item.id}" aria-label="削除" class="text-slate-300 hover:text-red-500 focus:outline-none focus:ring-2 focus:ring-red-200 rounded transition-colors text-xl sm:text-2xl leading-none p-1.5 sm:p-2 -m-1 cursor-pointer" title="削除">&times;</button>
           </div>
         </div>
       </div>
@@ -2379,23 +2408,23 @@ function updateOrCreateBlockElement(block, existingEl = null) {
   }
 
   blockEl.innerHTML = `
-    <button onclick="event.stopPropagation(); saveTemplate(${block.id})" class="absolute -top-3 -left-3 opacity-100 md:opacity-0 group-hover/block:opacity-100 bg-white border border-slate-200 text-slate-400 hover:text-blue-600 hover:border-blue-600/50 hover:shadow-[0_0_15px_rgba(37,99,235,0.3)] hover:scale-110 p-2 rounded-xl transition-all duration-300 cursor-pointer flex items-center justify-center z-10" title="このブロックをテンプレートとして保存">
+    <button data-action="saveTemplate" data-block-id="${block.id}" class="absolute -top-3 -left-3 opacity-100 md:opacity-0 group-hover/block:opacity-100 bg-white border border-slate-200 text-slate-400 hover:text-blue-600 hover:border-blue-600/50 hover:shadow-[0_0_15px_rgba(37,99,235,0.3)] hover:scale-110 p-2 rounded-xl transition-all duration-300 cursor-pointer flex items-center justify-center z-10" title="このブロックをテンプレートとして保存">
       <svg class="w-5 h-5"><use href="#icon-squares-plus"></use></svg>
     </button>
     <div class="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden transition-all hover:border-slate-300 hover:shadow-md">
-    <div onclick="toggleBlock(${block.id})" class="bg-slate-50/50 px-8 py-5 border-b border-slate-100 flex justify-between items-center transition-colors cursor-pointer select-none group/header hover:bg-slate-100">
+    <div data-action="toggleBlock" data-block-id="${block.id}" class="bg-slate-50/50 px-8 py-5 border-b border-slate-100 flex justify-between items-center transition-colors cursor-pointer select-none group/header hover:bg-slate-100">
       <div class="flex items-center gap-3 overflow-hidden">
         <svg id="block-icon-${block.id}" class="w-5 h-5 text-slate-400 transition-transform duration-200" style="transform: ${iconRotation};"><use href="#icon-chevron-down"></use></svg>
-        <h2 data-id="${block.id}" data-field="memo" contenteditable="true" oninput="setDirty(true)" onpaste="handlePlainTextPaste(event)" onclick="event.stopPropagation()" onkeydown="if(event.key==='Enter' && !event.isComposing){event.preventDefault();this.blur();}" onblur="updateRecord(${block.id}, 'memo', this.innerText, this)" class="select-text text-xl font-extrabold text-blue-950 tracking-tight outline-none focus:bg-white focus:ring-2 focus:ring-blue-600/30 px-1 rounded cursor-text truncate transition-colors empty:inline-block empty:min-w-20 empty:bg-slate-100 empty:before:content-['✎_タイトル未入力'] empty:before:text-slate-400 empty:before:text-sm empty:before:font-normal empty:before:pointer-events-none empty:focus:before:opacity-50">${escapeHtml(block.memo)}</h2>
+        <h2 data-id="${block.id}" data-field="memo" contenteditable="true"      class="select-text text-xl font-extrabold text-blue-950 tracking-tight outline-none focus:bg-white focus:ring-2 focus:ring-blue-600/30 px-1 rounded cursor-text truncate transition-colors empty:inline-block empty:min-w-20 empty:bg-slate-100 empty:before:content-['✎_タイトル未入力'] empty:before:text-slate-400 empty:before:text-sm empty:before:font-normal empty:before:pointer-events-none empty:focus:before:opacity-50">${escapeHtml(block.memo)}</h2>
         ${blockBadgeHtml}
       </div>
       <div class="flex items-center shrink-0">
         <div class="font-bold tabular-nums tracking-tight text-blue-950 text-lg"><span id="block-total-${block.id}">${jpyFormatter.format(blockTotal)}</span> <span class="text-slate-400 text-sm font-sans">円</span></div>
         <div class="flex items-center pl-4 border-l border-slate-200/50 ml-4 shrink-0 h-8">
-          <button onclick="event.stopPropagation(); sortBlockByDate(${block.id})" aria-label="日付順に並べ替え" class="w-8 h-8 flex items-center justify-center rounded text-slate-300 hover:bg-slate-100 hover:text-slate-600 md:opacity-0 md:group-hover/block:opacity-100 focus:opacity-100 focus:outline-none focus:ring-2 focus:ring-slate-200 transition-all cursor-pointer mr-1 ${block.children.length < 2 ? 'opacity-30 pointer-events-none md:!opacity-30' : ''}" title="日付の古い順に並べ替える">
+          <button data-action="sortBlockByDate" data-block-id="${block.id}" aria-label="日付順に並べ替え" class="w-8 h-8 flex items-center justify-center rounded text-slate-300 hover:bg-slate-100 hover:text-slate-600 md:opacity-0 md:group-hover/block:opacity-100 focus:opacity-100 focus:outline-none focus:ring-2 focus:ring-slate-200 transition-all cursor-pointer mr-1 ${block.children.length < 2 ? 'opacity-30 pointer-events-none md:!opacity-30' : ''}" title="日付の古い順に並べ替える">
             <svg class="w-5 h-5"><use href="#icon-sort"></use></svg>
           </button>
-          <button onclick="event.stopPropagation(); deleteRecord(${block.id})" aria-label="ブロックを削除" class="w-8 h-8 flex items-center justify-center rounded text-slate-300 hover:bg-red-50 hover:text-red-500 md:opacity-0 md:group-hover/block:opacity-100 focus:opacity-100 focus:outline-none focus:ring-2 focus:ring-red-200 transition-all cursor-pointer" title="ブロックを丸ごと削除">
+          <button data-action="deleteRecord" data-id="${block.id}" data-is-block="true" aria-label="ブロックを削除" class="w-8 h-8 flex items-center justify-center rounded text-slate-300 hover:bg-red-50 hover:text-red-500 md:opacity-0 md:group-hover/block:opacity-100 focus:opacity-100 focus:outline-none focus:ring-2 focus:ring-red-200 transition-all cursor-pointer" title="ブロックを丸ごと削除">
             <svg class="w-5 h-5"><use href="#icon-trash"></use></svg>
           </button>
         </div>
@@ -2404,28 +2433,22 @@ function updateOrCreateBlockElement(block, existingEl = null) {
     <div id="block-body-${block.id}" class="transition-all duration-300 ease-in-out overflow-hidden" style="max-height: ${maxH}; opacity: ${op};">
       <div class="">${itemsHtml}</div>
       <div class="px-8 py-4 bg-white transition-colors">
-      <form id="block-form-${block.id}" class="flex flex-wrap sm:flex-nowrap items-center gap-2 sm:gap-3 px-3 py-2 -mx-3 rounded-md transition-all focus-within:bg-slate-50 focus-within:ring-1 focus-within:ring-slate-200" onsubmit="event.preventDefault(); addItem(
-        ${block.id},
-        this.querySelector('.item-memo').value,
-        this.querySelector('.item-amount').value,
-        this.querySelector('.item-date').value,
-        this.querySelector('.item-account').value
-      );">
+      <form id="block-form-${block.id}" class="block-form flex flex-wrap sm:flex-nowrap items-center gap-2 sm:gap-3 px-3 py-2 -mx-3 rounded-md transition-all focus-within:bg-slate-50 focus-within:ring-1 focus-within:ring-slate-200" data-block-id="${block.id}">
         <span class="text-blue-600 text-xl leading-none font-light hidden sm:inline">+</span>
 
         <div class="flex items-center gap-2 sm:gap-3 w-full sm:w-auto">
           <button type="submit" aria-label="明細を追加" class="text-blue-600 bg-blue-600/10 hover:bg-blue-600/20 rounded-full w-8 h-8 flex items-center justify-center text-xl leading-none font-light sm:hidden transition-colors outline-none focus:ring-2 focus:ring-blue-600/50 shrink-0">+</button>
           <div class="flex items-center bg-slate-50 rounded-md px-1 py-1 border border-slate-200 transition-colors">
-            <button type="button" onclick="adjustDate(this, -1)" aria-label="1日戻す" class="text-slate-400 hover:text-slate-800 w-8 h-8 flex items-center justify-center font-bold cursor-pointer outline-none transition-colors touch-manipulation" title="-1日">-</button>
-            <input type="date" class="${dateInputClass}" value="${defaultDate}" oninput="setDirty(true); checkFutureDate(this)">
-            <button type="button" onclick="adjustDate(this, 1)" aria-label="1日進める" class="text-slate-400 hover:text-slate-800 w-8 h-8 flex items-center justify-center font-bold cursor-pointer outline-none transition-colors touch-manipulation" title="+1日">+</button>
+            <button type="button" data-action="adjustDate" data-delta="-1" aria-label="1日戻す" class="text-slate-400 hover:text-slate-800 w-8 h-8 flex items-center justify-center font-bold cursor-pointer outline-none transition-colors touch-manipulation" title="-1日">-</button>
+            <input type="date" class="${dateInputClass}" value="${defaultDate}" >
+            <button type="button" data-action="adjustDate" data-delta="1" aria-label="1日進める" class="text-slate-400 hover:text-slate-800 w-8 h-8 flex items-center justify-center font-bold cursor-pointer outline-none transition-colors touch-manipulation" title="+1日">+</button>
           </div>
-          <input type="text" placeholder="科目" value="${escapeHtml(defaultAccount)}" list="account-suggestions" oninput="setDirty(true)" onfocus="this.select()" onkeydown="if(event.key==='Enter'){ if(event.isComposing){ event.preventDefault(); return false; } event.preventDefault();this.closest('form').querySelector('.item-memo').focus();}" class="item-account bg-transparent border-0 focus:ring-0 p-0 text-slate-600 placeholder-slate-400 w-20 shrink-0 text-sm outline-none text-center" style="min-width: 60px;">
+          <input type="text" placeholder="科目" value="${escapeHtml(defaultAccount)}" list="account-suggestions"    class="item-account bg-transparent border-0 focus:ring-0 p-0 text-slate-600 placeholder-slate-400 w-20 shrink-0 text-sm outline-none text-center" style="min-width: 60px;">
         </div>
 
         <div class="flex items-center gap-2 sm:gap-3 w-full sm:w-auto sm:flex-1 pl-6 sm:pl-0 mt-2 sm:mt-0">
-          <input type="text" placeholder="明細を追加..." list="memo-suggestions" oninput="setDirty(true)" onblur="autoSuggestAccount(this)" onfocus="if(window.innerWidth < 640) { setTimeout(() => this.closest('form').scrollIntoView({ behavior: 'smooth', block: 'center' }), 300); }" onkeydown="if(event.key==='Enter'){ if(event.isComposing){ event.preventDefault(); return false; } event.preventDefault();this.closest('form').querySelector('.item-amount').focus();}" class="item-memo bg-transparent border-0 focus:ring-0 p-0 text-blue-950 placeholder-slate-400 flex-1 text-sm font-medium outline-none min-w-[100px]">
-          <input type="text" inputmode="decimal" placeholder="金額(数式OK)" class="item-amount bg-transparent border-0 focus:ring-0 p-0 text-right tabular-nums tracking-tight text-blue-950 placeholder-slate-400 w-24 sm:w-32 shrink-0 text-sm outline-none" style="min-width: 104px;" oninput="setDirty(true)" onfocus="if(window.innerWidth < 640) { setTimeout(() => this.closest('form').scrollIntoView({ behavior: 'smooth', block: 'center' }), 300); }" onkeydown="if(event.key==='Enter' && event.isComposing){ event.preventDefault(); return false; } else if(event.key==='Tab' && !event.shiftKey){ event.preventDefault(); this.closest('form').requestSubmit(); }" title="数式計算（+ - * /）が使えます">
+          <input type="text" placeholder="明細を追加..." list="memo-suggestions"     class="item-memo bg-transparent border-0 focus:ring-0 p-0 text-blue-950 placeholder-slate-400 flex-1 text-sm font-medium outline-none min-w-[100px]">
+          <input type="text" inputmode="decimal" placeholder="金額(数式OK)" class="item-amount bg-transparent border-0 focus:ring-0 p-0 text-right tabular-nums tracking-tight text-blue-950 placeholder-slate-400 w-24 sm:w-32 shrink-0 text-sm outline-none" style="min-width: 104px;"    title="数式計算（+ - * /）が使えます">
         </div>
         <button type="submit" class="hidden">追加</button>
       </form>
@@ -2531,7 +2554,7 @@ function insertTemplate(templateId) {
 
   // 今日の日付を取得
   const today = new Date();
-  const dateStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')} 00:00:00`;
+  const dateStr = `${getTodayString()} 00:00:00`;
 
   // 子要素を展開して一気にINSERT
   let insertStmt = null;
@@ -2576,8 +2599,11 @@ function insertTemplate(templateId) {
 }
 
 // 3.5 データの削除（DELETE文の実行）
-function deleteRecord(id) {
-  if (!confirm('この記録を削除しますか？')) return;
+function deleteRecord(id, isBlock = false) {
+  const msg = isBlock 
+    ? '⚠️ 警告 ⚠️\nこのブロックを削除しますか？\n（中に含まれるすべての明細データも完全に削除されます）'
+    : 'この記録を削除しますか？';
+  if (!confirm(msg)) return;
   let stmt;
   try {
     stmt = db.prepare('DELETE FROM records WHERE id = ? OR parent_id = ?');
@@ -2589,6 +2615,7 @@ function deleteRecord(id) {
   // ゾンビステートのクリーンアップ
   collapsedBlocks.delete(id);
   delete lastUsedDates[id];
+  delete lastUsedAccounts[id];
 
   setDirty(true);
   renderData();
@@ -2721,11 +2748,6 @@ async function saveGrindFile(isSaveAs = false) {
       if (form) activeSelector = `#${form.id} .item-date`;
     } else if (activeEl.id) {
       activeSelector = `#${activeEl.id}`;
-    } else if (activeEl.className && typeof activeEl.className === 'string') {
-      const firstClass = activeEl.className.trim().split(' ')[0];
-      if (firstClass) {
-        activeSelector = `.${CSS.escape(firstClass)}`;
-      }
     }
     activeEl.blur(); // 一旦フォーカスを外してDBに値を確定(UPDATE)させる
   }
@@ -2735,24 +2757,24 @@ async function saveGrindFile(isSaveAs = false) {
     db.run('VACUUM');
 
     let data = db.export();
-    const currentPassword = document.getElementById('file-password').value;
-    const currentPasswordHash = await getPasswordHash(currentPassword);
+    const hasPasswordSet = currentMasterKey !== null;
+    const currentHash = currentMasterKeyHash;
 
     // 【セキュリティ修正 1】: パスワードを空にして暗号化を解除しようとした場合の警告
-    if (lastSavedPasswordHash !== '' && currentPassword === '') {
+    if (lastSavedPasswordHash !== '' && !hasPasswordSet) {
       if (
         !confirm(
-          '⚠️ 警告 ⚠️\nパスワードが空になっています。\nこのまま保存すると、ファイルの暗号化が解除され「平文」で保存されます。\n\n本当に暗号化を解除して保存しますか？',
+          '⚠️ 警告 ⚠️\nパスワードが解除されています。\nこのまま保存すると、ファイルの暗号化が解除され「平文」で保存されます。\n\n本当に暗号化を解除して保存しますか？',
         )
       ) {
-        alert('保存を中断しました。パスワードを空のままにせず、再度入力してください。');
+        alert('保存を中断しました。もう一度パスワードを設定してください。');
         isSaving = false;
         return;
       }
     }
 
     // 【セキュリティ修正 2】: 新規パスワード設定時、または変更時の「確認ダイアログ」
-    if (currentPassword !== '' && currentPasswordHash !== lastSavedPasswordHash) {
+    if (hasPasswordSet && currentHash !== lastSavedPasswordHash) {
       const confirmPw = await requestPasswordPrompt(
         '🔒 新しいパスワードを設定（または変更）します。\n確認のため、同じパスワードをもう一度入力してください:',
       );
@@ -2760,15 +2782,16 @@ async function saveGrindFile(isSaveAs = false) {
         isSaving = false;
         return;
       } // キャンセル
-      if (confirmPw !== currentPassword) {
+      const confirmHash = await getPasswordHash(confirmPw);
+      if (confirmHash !== currentHash) {
         alert('❌ パスワードが一致しません。保存を中止しました。');
         isSaving = false;
         return;
       }
     }
 
-    if (currentPassword) {
-      data = await encryptData(data, currentPassword);
+    if (hasPasswordSet) {
+      data = await encryptData(data, currentMasterKey);
     }
 
     // 保存成功時の視覚的なタクタイル・フィードバックを共通化
@@ -2797,7 +2820,9 @@ async function saveGrindFile(isSaveAs = false) {
     if (isSaveAs || !fileHandle || fileHandle.isDummy) {
       if ('showSaveFilePicker' in window) {
         try {
+          const todayStr = new Date().toISOString().slice(0, 10).replace(/-/g, '');
           fileHandle = await window.showSaveFilePicker({
+            suggestedName: `GrindMoney_${todayStr}.money`,
             types: [
               {
                 description: 'GrindMoney Database',
@@ -2814,7 +2839,8 @@ async function saveGrindFile(isSaveAs = false) {
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
-        a.download = fileHandle && fileHandle.name ? fileHandle.name : 'database.money';
+        const todayStr = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+        a.download = fileHandle && fileHandle.name ? fileHandle.name : `GrindMoney_${todayStr}.money`;
         document.body.appendChild(a);
         a.click();
         document.body.removeChild(a);
@@ -2826,7 +2852,7 @@ async function saveGrindFile(isSaveAs = false) {
           '<span class="text-green-400">💾</span>',
         );
         showSaveSuccessFeedback();
-        lastSavedPasswordHash = currentPasswordHash;
+        lastSavedPasswordHash = currentHash;
         return;
       }
     }
@@ -2866,7 +2892,10 @@ async function saveGrindFile(isSaveAs = false) {
     lastSavedPasswordHash = currentPasswordHash;
   } catch (err) {
     console.error('Save failed:', err);
-    showToast('エラー: ファイルの保存に失敗しました。容量や権限を確認してください', '<span class="text-red-400">❌</span>');
+    showToast(
+      'エラー: ファイルの保存に失敗しました。容量や権限を確認してください',
+      '<span class="text-red-400">❌</span>',
+    );
   } finally {
     isSaving = false;
 
@@ -2919,29 +2948,31 @@ async function processFileHandle(handle, isDummy = false) {
     const isEncrypted = magicStr === 'GRINDENC' || magicStr === 'GRINDEN2';
 
     if (isEncrypted) {
-      let password = document.getElementById('file-password').value;
+      let keyMaterial = currentMasterKey;
       let success = false;
       while (!success) {
         try {
-          Uints = await decryptData(Uints, password);
-          success = true;
-          if (password) {
-            document.getElementById('file-password').value = password;
-            lastSavedPasswordHash = await getPasswordHash(password);
+          if (!keyMaterial) {
+            throw new Error('Need password'); // Force prompt if no key
           }
+          Uints = await decryptData(Uints, keyMaterial);
+          success = true;
+          lastSavedPasswordHash = currentMasterKeyHash;
         } catch (err) {
-          password = await requestPasswordPrompt(
+          const promptPw = await requestPasswordPrompt(
             'ファイルは暗号化されています。解除パスワードを入力してください:',
           );
-          if (password === null) return; // キャンセルして処理を中断
+          if (promptPw === null) return; // キャンセルして処理を中断
+          
+          await setMasterPassword(promptPw);
+          keyMaterial = currentMasterKey;
         }
       }
     }
 
     if (!isEncrypted) {
       lastSavedPasswordHash = '';
-      const pwInput = document.getElementById('file-password');
-      if (pwInput) pwInput.value = '';
+      await setMasterPassword('');
     }
 
     let newDb;
@@ -3058,6 +3089,7 @@ function showExportModal() {
 
   modal.classList.remove('hidden');
   modal.classList.add('flex');
+  window.isSystemModalOpen = true;
   document.body.style.overflow = 'hidden';
   setAppInert(true);
 }
@@ -3066,7 +3098,10 @@ function closeExportModal() {
   const modal = document.getElementById('export-modal');
   modal.classList.add('hidden');
   modal.classList.remove('flex');
-  document.body.style.overflow = '';
+  if (!document.querySelector('.flex[role="dialog"]')) {
+    window.isSystemModalOpen = false;
+    document.body.style.overflow = '';
+  }
   setAppInert(false);
 }
 
@@ -3164,24 +3199,24 @@ function exportCSV(format = 'yayoi') {
     const escapedMemo = sanitizeCsvCell(memo);
 
     // 🌟 タグ判定による「発生」か「決済(消込)」かの判別
-    const isCollection = childMemo.includes('#入金') || childMemo.includes('#支払') || childMemo.includes('#決済');
+    const isCollection =
+      childMemo.includes('#入金') || childMemo.includes('#支払') || childMemo.includes('#決済');
 
     // 「自動連携しているため決済行は出力しない」設定の場合はスキップ
     if (isCollection && !includeCollection) return;
 
     // 🚨 デグレ修正: プラス/マイナス入力された「費用」や「資産」の仕訳をスマート反転
     const acctCode = FREEWAY_CODE_MAP[account] || '';
-    const isDebitAccount = (
+    const isDebitAccount =
       account !== '売上高' &&
       account !== '雑収入' &&
       account !== '売掛金' &&
       account !== '未収入金' &&
       account !== '前受金' &&
       (acctCode.startsWith('8') ||
-       acctCode.startsWith('1') ||
-       acctCode.startsWith('2') ||
-       acctCode.startsWith('3'))
-    );
+        acctCode.startsWith('1') ||
+        acctCode.startsWith('2') ||
+        acctCode.startsWith('3'));
 
     if (isDebitAccount) {
       isIncome = !isIncome;
@@ -3367,15 +3402,16 @@ function importCSV(event) {
     return;
   }
 
+  const inputEl = event.target;
   const reader = new FileReader();
   reader.onload = function (e) {
     pendingCSVBuffer = e.target.result; // ArrayBufferを保存
     showCSVModal();
-    event.target.value = '';
+    inputEl.value = '';
   };
   reader.onerror = function () {
     alert('ファイルの読み込みに失敗しました。ファイルが破損しているか、メモリが不足しています。');
-    event.target.value = '';
+    inputEl.value = '';
   };
   reader.readAsArrayBuffer(file); // ArrayBufferとして読み込む
 }
@@ -3385,6 +3421,7 @@ function showCSVModal() {
   const modal = document.getElementById('csv-mapping-modal');
   modal.classList.remove('hidden');
   modal.classList.add('flex');
+  window.isSystemModalOpen = true;
   document.body.style.overflow = 'hidden';
   setAppInert(true);
   updateCSVPreview(); // プレビューとマッピングを初期描画
@@ -3429,7 +3466,9 @@ function updateCSVPreview() {
         currentCellStr = '';
       } else {
         if (currentCellStr.length > 10000) {
-          throw new Error('セルの文字数が制限(10,000文字)を超えました。不正なCSVの可能性があります。');
+          throw new Error(
+            'セルの文字数が制限(10,000文字)を超えました。不正なCSVの可能性があります。',
+          );
         }
         currentCellStr += char;
       }
@@ -3480,7 +3519,7 @@ function updateCSVPreview() {
 
   const oldVals = {
     date: mapDate.value || '-1',
-    account: mapAccount ? (mapAccount.value || '-1') : '-1',
+    account: mapAccount ? mapAccount.value || '-1' : '-1',
     memo: mapMemo.value || '-1',
     amount: mapAmount.value || '-1',
   };
@@ -3604,7 +3643,10 @@ function closeCSVModal() {
   const modal = document.getElementById('csv-mapping-modal');
   modal.classList.add('hidden');
   modal.classList.remove('flex');
-  document.body.style.overflow = '';
+  if (!document.querySelector('.flex[role="dialog"]')) {
+    window.isSystemModalOpen = false;
+    document.body.style.overflow = '';
+  }
   setAppInert(false);
   pendingCSVData = [];
   pendingCSVBuffer = null;
@@ -3615,7 +3657,7 @@ function executeCSVImport() {
   const mapAccount = parseInt(document.getElementById('map-account').value, 10);
   const mapMemo = parseInt(document.getElementById('map-memo').value, 10);
   const mapAmount = parseInt(document.getElementById('map-amount').value, 10);
-  const skipRows = parseInt(document.getElementById('csv-skip-rows').value, 10) || 0;
+  const skipRows = Math.max(0, parseInt(document.getElementById('csv-skip-rows').value, 10) || 0);
 
   if (mapMemo === -1 || mapAmount === -1) {
     alert('「メモ」と「金額」の列は必須です。');
@@ -3692,6 +3734,20 @@ function executeCSVImport() {
         .replace(/[０-９]/g, (s) => String.fromCharCode(s.charCodeAt(0) - 0xfee0))
         .replace(/[ー−△]/g, '-');
 
+      normalizedAmount = normalizedAmount.replace(/(?:\d+[.,])+\d+/g, (match) => {
+        const lastComma = match.lastIndexOf(',');
+        const lastDot = match.lastIndexOf('.');
+        if (lastComma > lastDot && lastDot !== -1) return match.replace(/\./g, '').replace(/,/g, '.');
+        else if (lastDot > lastComma && lastComma !== -1) return match.replace(/,/g, '');
+        else if (lastComma !== -1) {
+          if (/,\d{3}$/.test(match)) return match.replace(/,/g, '');
+          else return match.replace(/,/g, '.');
+        } else {
+          if (match.match(/\./g) && match.match(/\./g).length > 1) return match.replace(/\./g, '');
+          return match;
+        }
+      });
+
       // 会計特有の (1,500) というマイナス表記を -1500 に変換する
       const trimmedAmount = normalizedAmount.trim();
       if (/^\([\d,.]+\)$/.test(trimmedAmount)) {
@@ -3720,13 +3776,24 @@ function executeCSVImport() {
       if (!isNaN(amount)) {
         let parsedDate = new Date(dateStr);
         // YYYY-MM-DD形式等のタイムゾーン問題を回避する
-        if (dateStr && /^\d{4}-\d{1,2}-\d{1,2}$/.test(dateStr.trim())) {
-          const parts = dateStr.trim().split('-');
+        const dStr = dateStr.trim();
+        if (dStr && /^\d{4}[\/\-]\d{1,2}[\/\-]\d{1,2}$/.test(dStr)) {
+          const parts = dStr.split(/[\/\-]/);
           parsedDate = new Date(
             parseInt(parts[0], 10),
             parseInt(parts[1], 10) - 1,
             parseInt(parts[2], 10),
           );
+        } else if (dStr && /^\d{1,2}[\/\-]\d{1,2}[\/\-]\d{4}$/.test(dStr)) {
+          const parts = dStr.split(/[\/\-]/);
+          const p0 = parseInt(parts[0], 10);
+          const p1 = parseInt(parts[1], 10);
+          const p2 = parseInt(parts[2], 10);
+          if (p0 > 12) {
+            parsedDate = new Date(p2, p1 - 1, p0);
+          } else {
+            parsedDate = new Date(p2, p0 - 1, p1);
+          }
         }
 
         let finalAccountStr = accountStr;
@@ -3748,8 +3815,13 @@ function executeCSVImport() {
           const dd = String(parsedDate.getDate()).padStart(2, '0');
           finalDateStr = `${yyyy}-${mm}-${dd} 00:00:00`;
         } else {
+          if (dateStr.trim() !== '') {
+            db.run('ROLLBACK;');
+            alert(`Invalid date format detected at Row ${i + 1}: "${dateStr}".\nImport aborted to prevent data corruption.`);
+            return;
+          }
           const today = new Date();
-          finalDateStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')} 00:00:00`;
+          finalDateStr = `${getTodayString()} 00:00:00`;
         }
 
         if (insertStmt) {
@@ -3979,7 +4051,8 @@ function toggleCommandPalette() {
   if (isCommandPaletteOpen) {
     palette.classList.remove('hidden');
     palette.classList.add('flex');
-    document.body.style.overflow = 'hidden';
+    window.isSystemModalOpen = true;
+  document.body.style.overflow = 'hidden';
     setAppInert(true);
     input.value = '';
     selectedCommandIndex = 0;
@@ -3993,7 +4066,10 @@ function toggleCommandPalette() {
   } else {
     palette.classList.add('hidden');
     palette.classList.remove('flex');
-    document.body.style.overflow = '';
+    if (!document.querySelector('.flex[role="dialog"]')) {
+      window.isSystemModalOpen = false;
+      document.body.style.overflow = '';
+    }
     setAppInert(false);
   }
 }
@@ -4073,6 +4149,7 @@ function getFilteredCommands(query) {
                   resultStr,
                   prePaletteActiveElement,
                 );
+                setDirty(true);
                 showToast(
                   `${resultStr} を直接入力しました`,
                   '<span class="text-green-400">✨</span>',
@@ -4268,29 +4345,62 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 
 // --- マルチタブ起動によるデータ競合の防止 ---
-const bc = new BroadcastChannel('grindmoney_app_channel');
-let hasAlerted = false;
+if (typeof BroadcastChannel !== 'undefined') {
+  const bc = new BroadcastChannel('grindmoney_app_channel');
+  let hasAlerted = false;
 
-bc.onmessage = (e) => {
-  if (e.data === 'ping') {
-    bc.postMessage('pong'); // すでに開いているタブが応答する
-  } else if (e.data === 'pong') {
-    // 自分が後から開いたタブだった場合
-    if (!hasAlerted) {
-      hasAlerted = true;
-      alert(
-        '⚠️ GrindMoneyは既に別のタブまたはウィンドウで開かれています。\n\nデータ競合（バックアップの巻き戻り）を防ぐため、このタブでの編集は行わないでください。',
-      );
-      document.body.style.opacity = '0.5';
-      document.body.style.pointerEvents = 'none';
+  bc.onmessage = (e) => {
+    if (e.data === 'ping') {
+      if (!hasAlerted) bc.postMessage('pong'); // すでに開いているタブが応答する
+    } else if (e.data === 'pong') {
+      // 自分が後から開いたタブだった場合
+      if (!hasAlerted) {
+        hasAlerted = true;
+        alert(
+          '⚠️ GrindMoneyは既に別のタブまたはウィンドウで開かれています。\n\nデータ競合（バックアップの巻き戻り）を防ぐため、このタブでの編集は行わないでください。',
+        );
+        document.body.style.opacity = '0.5';
+        document.body.style.pointerEvents = 'none';
+      }
     }
-  }
-};
-bc.postMessage('ping');
+  };
+  bc.postMessage('ping');
+}
 
 document.getElementById('cmd-input')?.addEventListener('input', (e) => {
   selectedCommandIndex = 0;
   renderCommandList(e.target.value);
+});
+
+// --- パスワードイベント設定 ---
+document.addEventListener('DOMContentLoaded', () => {
+  const pwInput = document.getElementById('file-password');
+  if (pwInput) {
+    pwInput.addEventListener('change', async (e) => {
+      await setMasterPassword(e.target.value);
+    });
+    pwInput.addEventListener('keydown', async (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        await setMasterPassword(e.target.value);
+        pwInput.blur();
+      }
+    });
+  }
+
+  const btnClearPw = document.getElementById('btn-clear-password');
+  if (btnClearPw) {
+    btnClearPw.addEventListener('click', async () => {
+      if (confirm('パスワード設定を解除しますか？\n（次回保存時にファイルが暗号化されなくなります）')) {
+        await setMasterPassword('');
+      }
+    });
+  }
+
+  const btnTogglePw = document.getElementById('btn-toggle-password');
+  if (btnTogglePw) {
+    btnTogglePw.addEventListener('click', togglePasswordVisibility);
+  }
 });
 
 // --- パスワード表示トグル ---
@@ -4594,6 +4704,7 @@ function showAccountDictEditor() {
   const modal = document.getElementById('account-dict-editor-modal');
   modal.classList.remove('hidden');
   modal.classList.add('flex');
+  window.isSystemModalOpen = true;
   document.body.style.overflow = 'hidden';
   setAppInert(true);
   renderCustomDictEditor();
@@ -4620,7 +4731,10 @@ function closeAccountDictEditor() {
   const modal = document.getElementById('account-dict-editor-modal');
   modal.classList.add('hidden');
   modal.classList.remove('flex');
-  document.body.style.overflow = '';
+  if (!document.querySelector('.flex[role="dialog"]')) {
+    window.isSystemModalOpen = false;
+    document.body.style.overflow = '';
+  }
   setAppInert(false);
   // 変更を保存せずに閉じた場合は、元の状態に戻す
   loadCustomDict();
@@ -4632,7 +4746,10 @@ function saveCustomDictAndClose() {
   const modal = document.getElementById('account-dict-editor-modal');
   modal.classList.add('hidden');
   modal.classList.remove('flex');
-  document.body.style.overflow = '';
+  if (!document.querySelector('.flex[role="dialog"]')) {
+    window.isSystemModalOpen = false;
+    document.body.style.overflow = '';
+  }
   setAppInert(false);
 }
 
@@ -4658,15 +4775,15 @@ function renderCustomDictEditor() {
       <div class="flex items-center gap-1 shrink-0">
         <!-- スマホ用の上下移動ボタン -->
         <div class="flex flex-col sm:hidden mr-2">
-          <button type="button" onclick="event.stopPropagation(); moveCustomDictItem(${index}, -1)" class="text-slate-400 hover:text-slate-700 px-1 py-0.5 leading-none ${index === 0 ? 'opacity-30 cursor-not-allowed' : ''}" ${index === 0 ? 'disabled' : ''}>▲</button>
-          <button type="button" onclick="event.stopPropagation(); moveCustomDictItem(${index}, 1)" class="text-slate-400 hover:text-slate-700 px-1 py-0.5 leading-none ${index === customAccountDict.length - 1 ? 'opacity-30 cursor-not-allowed' : ''}" ${index === customAccountDict.length - 1 ? 'disabled' : ''}>▼</button>
+          <button type="button" data-action="moveCustomDictItem" data-index="${index}" data-delta="-1" class="text-slate-400 hover:text-slate-700 px-1 py-0.5 leading-none ${index === 0 ? 'opacity-30 cursor-not-allowed' : ''}" ${index === 0 ? 'disabled' : ''}>▲</button>
+          <button type="button" data-action="moveCustomDictItem" data-index="${index}" data-delta="1" class="text-slate-400 hover:text-slate-700 px-1 py-0.5 leading-none ${index === customAccountDict.length - 1 ? 'opacity-30 cursor-not-allowed' : ''}" ${index === customAccountDict.length - 1 ? 'disabled' : ''}>▼</button>
         </div>
         <!-- 表示/非表示トグル -->
-        <button onclick="toggleCustomAccountHidden(${index})" class="text-slate-400 hover:text-slate-600 transition-colors shrink-0" title="${title}">
+        <button data-action="toggleCustomAccountHidden" data-index="${index}" class="text-slate-400 hover:text-slate-600 transition-colors shrink-0" title="${title}">
           <svg class="w-5 h-5"><use href="#${icon}"></use></svg>
         </button>
         <!-- 削除ボタン -->
-        <button onclick="deleteCustomDictItem(${index})" class="text-slate-300 hover:text-red-500 transition-colors shrink-0 ml-1" title="完全に削除する">
+        <button data-action="deleteCustomDictItem" data-index="${index}" class="text-slate-300 hover:text-red-500 transition-colors shrink-0 ml-1" title="完全に削除する">
           <svg class="w-5 h-5"><use href="#icon-trash"></use></svg>
         </button>
       </div>
@@ -4734,7 +4851,6 @@ function setAllCustomAccountsHidden(isHidden) {
 // --- ハッシュタグモーダル制御 ---
 function showTagModal(tag, data) {
   const modal = document.getElementById('tag-modal');
-  document.getElementById('tag-modal-title').textContent = tag;
   // 💡 Gold-Rank: タグ名の横に (全○件) と表示して分析しやすくする
   document.getElementById('tag-modal-title').textContent = `${tag} (${data.items.length}件)`;
   document.getElementById('tag-modal-total').textContent = '¥' + jpyFormatter.format(data.amount);
@@ -4763,6 +4879,7 @@ function showTagModal(tag, data) {
 
   modal.classList.remove('hidden');
   modal.classList.add('flex');
+  window.isSystemModalOpen = true;
   document.body.style.overflow = 'hidden';
   setAppInert(true);
 }
@@ -4771,15 +4888,21 @@ function closeTagModal() {
   const modal = document.getElementById('tag-modal');
   modal.classList.add('hidden');
   modal.classList.remove('flex');
-  document.body.style.overflow = '';
+  if (!document.querySelector('.flex[role="dialog"]')) {
+    window.isSystemModalOpen = false;
+    document.body.style.overflow = '';
+  }
   setAppInert(false);
 }
 
 if (!window.isSecureContext) {
   alert(
-    '⚠️ セキュリティ警告 ⚠️\n\n現在のアクセス環境 (HTTP) では、ブラウザのセキュリティ制限によりファイルの読み書きや暗号化機能がブロックされます。\n\nGrindMoneyを正常に動作させるには、必ず「HTTPS」環境にアップロードするか、「localhost」で実行してください。'
+    '⚠️ セキュリティ警告 ⚠️\n\n現在のアクセス環境 (HTTP) では、ブラウザのセキュリティ制限によりファイルの読み書きや暗号化機能がブロックされます。\n\nGrindMoneyを正常に動作させるには、必ず「HTTPS」環境にアップロードするか、「localhost」で実行してください。',
   );
-  showToast('エラー: HTTPS環境またはlocalhostでの実行が必要です', '<span class="text-red-400">⚠️</span>');
+  showToast(
+    'エラー: HTTPS環境またはlocalhostでの実行が必要です',
+    '<span class="text-red-400">⚠️</span>',
+  );
 } else {
   // アプリ起動時にSQLiteをロード
   initSQLite();
@@ -4945,51 +5068,175 @@ if (shortcutEl) {
 const btnSaveTooltip = document.getElementById('btn-save');
 if (btnSaveTooltip) btnSaveTooltip.title = `保存 (${isMac ? '⌘S' : 'Ctrl+S'})`;
 
-const btnOpenTooltip = document.querySelector('button[onclick="loadGrindFile()"]');
+const btnOpenTooltip = document.getElementById("btn-open-file");
 if (btnOpenTooltip) btnOpenTooltip.title = `開く (${isMac ? '⌘O' : 'Ctrl+O'})`;
 
-// --- 最後の砦：タブ閉じ/バックグラウンド移行時の強制バックアップ ---
-document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'hidden' && isDirty && db) {
-    try {
-      const currentPassword = document.getElementById('file-password').value;
-      // 暗号化されている、またはされようとしている場合は、平文での緊急バックアップを中止する
-      if (lastSavedPasswordHash !== '' || currentPassword !== '') {
-        console.warn('暗号化状態での緊急バックアップをスキップします。');
-        return;
-      }
-
-      // 簡易的なサイズチェック（SQLiteのページ数などで推定）
-      const pageSizeRes = db.exec('PRAGMA page_size');
-      const pageCountRes = db.exec('PRAGMA page_count');
-      if (pageSizeRes.length && pageCountRes.length) {
-        const sizeBytes = pageSizeRes[0].values[0][0] * pageCountRes[0].values[0][0];
-        if (sizeBytes > 5 * 1024 * 1024) {
-          console.warn('DBが大きすぎるため、終了時のバックアップをスキップします');
-          return;
-        }
-      }
-
-      const data = db.export();
-
-      // visibilitychange イベント内では非同期処理が中断される可能性があるため、同期的なAPI呼び出しスタイルで記述
-      const request = indexedDB.open(DB_NAME, 1);
-      request.onupgradeneeded = (e) => {
-        const idb = e.target.result;
-        if (!idb.objectStoreNames.contains(STORE_NAME)) {
-          idb.createObjectStore(STORE_NAME);
-        }
-      };
-      request.onsuccess = (e) => {
-        const idb = e.target.result;
-        const store = idb.transaction(STORE_NAME, 'readwrite').objectStore(STORE_NAME);
-        store.put(data, 'latest_draft');
-      };
-      request.onerror = (e) => {
-        console.warn('終了時の緊急バックアップがブラウザに拒否されました');
-      };
-    } catch (e) {
-      console.error('Emergency save error', e);
+// --- Event Delegation ---
+function initEventDelegation() {
+  document.addEventListener('click', (e) => {
+    let target = e.target.closest('[data-action]');
+    if (target) {
+      const action = target.getAttribute('data-action');
+      if (action === 'setPeriodFilter') setPeriodFilter(target.getAttribute('data-period'), target);
+      else if (action === 'setMultiMonthFilter') setMultiMonthFilter(target.getAttribute('data-months').split(',').map(Number), target);
+      else if (action === 'setCalendarYearFilter') setCalendarYearFilter(target);
+      else if (action === 'setPreviousFiscalYearFilter') setPreviousFiscalYearFilter(target);
+      else if (action === 'setFiscalYearFilter') setFiscalYearFilter(target);
+      else if (action === 'changeFiscalMonth') changeFiscalMonth();
+      else if (action === 'toggleAllBlocks') toggleAllBlocks(target.getAttribute('data-open') === 'true');
+      else if (action === 'closeCSVModal') closeCSVModal();
+      else if (action === 'stopPropagation') e.stopPropagation();
+      else if (action === 'executeCSVImport') executeCSVImport();
+      else if (action === 'closeExportModal') closeExportModal();
+      else if (action === 'executeExport') executeExport();
+      else if (action === 'closeTagModal') closeTagModal();
+      else if (action === 'closeAccountDictEditor') closeAccountDictEditor();
+      else if (action === 'saveCustomDictAndClose') saveCustomDictAndClose();
+      else if (action === 'toggleCommandPalette') toggleCommandPalette();
+      else if (action === 'reloadPage') { location.reload(); e.preventDefault(); }
+      else if (action === 'setAllCustomAccountsHidden') setAllCustomAccountsHidden(target.getAttribute('data-hidden') === 'true');
+      
+      // Main UI actions
+      else if (action === 'createCollectionRecord') createCollectionRecord(Number(target.getAttribute('data-id')));
+      else if (action === 'duplicateRecord') duplicateRecord(Number(target.getAttribute('data-id')));
+      else if (action === 'deleteRecord') deleteRecord(Number(target.getAttribute('data-id')), target.getAttribute('data-is-block') === 'true');
+      else if (action === 'saveTemplate') { e.stopPropagation(); saveTemplate(Number(target.getAttribute('data-block-id'))); }
+      else if (action === 'toggleBlock') toggleBlock(Number(target.getAttribute('data-block-id')));
+      else if (action === 'sortBlockByDate') { e.stopPropagation(); sortBlockByDate(Number(target.getAttribute('data-block-id'))); }
+      else if (action === 'adjustDate') adjustDate(target, Number(target.getAttribute('data-delta')));
+      else if (action === 'moveCustomDictItem') { e.stopPropagation(); moveCustomDictItem(Number(target.getAttribute('data-index')), Number(target.getAttribute('data-delta'))); }
+      else if (action === 'toggleCustomAccountHidden') toggleCustomAccountHidden(Number(target.getAttribute('data-index')));
+      else if (action === 'deleteCustomDictItem') deleteCustomDictItem(Number(target.getAttribute('data-index')));
+      else if (action === 'focusNewBlockMemo') { const el = document.getElementById('new-block-memo'); el.focus(); el.scrollIntoView({behavior: 'smooth', block: 'center'}); }
+      else if (action === 'clickCsvInput') document.getElementById('csv-input').click();
     }
-  }
+  });
+
+  document.addEventListener('change', (e) => {
+    let target = e.target;
+    if (target.id === 'dict-select') changeAccountDict();
+    else if (target.id === 'csv-input') importCSV(e);
+    else if (target.id === 'period-filter') handleDropdownChange();
+    else if (target.getAttribute('data-action') === 'renderCSVPreview') renderCSVPreview();
+    else if (target.getAttribute('data-action') === 'updateCSVPreview') updateCSVPreview();
+  });
+
+  document.addEventListener('input', (e) => {
+    let target = e.target;
+    if (target.hasAttribute('data-field') || target.classList.contains('item-memo') || target.classList.contains('item-amount') || target.classList.contains('item-account') || target.tagName === 'H2') {
+      setDirty(true);
+    }
+    if (target.getAttribute('data-action') === 'renderCSVPreview') renderCSVPreview();
+    if (target.type === 'date') checkFutureDate(target);
+  });
+
+  document.addEventListener('submit', (e) => {
+    let target = e.target;
+    if (target.getAttribute('data-action') === 'prevent-submit-and-add-block') {
+      e.preventDefault();
+      addBlock();
+    } else if (target.getAttribute('data-action') === 'prevent-submit') {
+      e.preventDefault();
+    } else if (target.classList.contains('block-form')) {
+      e.preventDefault();
+      const blockId = Number(target.getAttribute('data-block-id'));
+      addItem(blockId, target.querySelector('.item-memo').value, target.querySelector('.item-amount').value, target.querySelector('.item-date').value, target.querySelector('.item-account').value);
+    }
+  });
+
+  document.addEventListener('focus', (e) => {
+    let target = e.target;
+    if (target.classList.contains('item-account')) target.select();
+    if (target.hasAttribute('data-field') && target.getAttribute('data-field') === 'amount') {
+      if (target.tagName === 'INPUT') {
+        target.value = target.value.replace(/,/g, '');
+        target.select();
+      }
+    }
+    if ((target.classList.contains('item-memo') || target.classList.contains('item-amount')) && target.tagName === 'INPUT') {
+      if(window.innerWidth < 640) { setTimeout(() => target.closest('form')?.scrollIntoView({ behavior: 'smooth', block: 'center' }), 300); }
+    }
+  }, true);
+
+  document.addEventListener('blur', (e) => {
+    let target = e.target;
+    if (target.hasAttribute('data-field')) {
+      const id = Number(target.getAttribute('data-id'));
+      const field = target.getAttribute('data-field');
+      const val = target.tagName === 'INPUT' ? target.value : target.innerText;
+      updateRecord(id, field, val, target);
+    }
+    if (target.classList.contains('item-memo') && target.tagName === 'INPUT') {
+      autoSuggestAccount(target);
+    }
+  }, true);
+
+  document.addEventListener('keydown', (e) => {
+    let target = e.target;
+    if (target.getAttribute('data-action') === 'handleNewBlockKeydown') {
+      if (e.key === 'Enter' && e.isComposing) { e.preventDefault(); return false; }
+    }
+    if (target.hasAttribute('data-field') || target.tagName === 'H2') {
+      if(e.key === 'Enter' && !e.isComposing) { e.preventDefault(); target.blur(); }
+    }
+    if (target.classList.contains('item-account')) {
+      if(e.key === 'Enter'){ 
+        if(e.isComposing){ e.preventDefault(); return false; } 
+        e.preventDefault(); 
+        const memo = target.closest('form')?.querySelector('.item-memo');
+        if(memo) memo.focus();
+      }
+    }
+    if (target.classList.contains('item-memo') && target.tagName === 'INPUT') {
+      if(e.key === 'Enter'){ 
+        if(e.isComposing){ e.preventDefault(); return false; } 
+        e.preventDefault(); 
+        const amount = target.closest('form')?.querySelector('.item-amount');
+        if(amount) amount.focus();
+      }
+    }
+    if (target.classList.contains('item-amount') && target.tagName === 'INPUT') {
+      if(e.key === 'Enter' && e.isComposing){ e.preventDefault(); return false; }
+      else if(e.key === 'Tab' && !e.shiftKey){ e.preventDefault(); target.closest('form')?.requestSubmit(); }
+    }
+  });
+
+  document.addEventListener('paste', (e) => {
+    let target = e.target;
+    if (target.hasAttribute('contenteditable')) {
+      handlePlainTextPaste(e);
+    }
+  });
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  initEventDelegation();
 });
+
+// Register Service Worker for PWA
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('./sw.js').then(
+      (registration) => {
+        console.log('ServiceWorker registration successful with scope: ', registration.scope);
+      },
+      (err) => {
+        console.log('ServiceWorker registration failed: ', err);
+      }
+    );
+
+    let refreshing = false;
+    navigator.serviceWorker.addEventListener('controllerchange', () => {
+      if (!refreshing) {
+        refreshing = true;
+        if (typeof showToast === 'function') {
+          const message = `アプリが最新版に更新されました。<a href="#" data-action="reloadPage" class="ml-2 font-bold underline cursor-pointer">リロードして適用</a>`;
+          showToast(message, '<span class="text-blue-400">✨</span>', {
+            duration: Infinity,
+            rawHtml: true,
+          });
+        }
+      }
+    });
+  });
+}

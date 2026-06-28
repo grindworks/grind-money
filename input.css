@@ -219,4 +219,19 @@
   #blocks-container {
     view-transition-name: block-list;
   }
+
+  .privacy-mode .item-amount,
+  .privacy-mode .total-amount,
+  .privacy-mode #total-amount-display,
+  .privacy-mode #modal-total-amount,
+  .privacy-mode #tag-modal-amount,
+  .privacy-mode #daily-total,
+  .privacy-mode #weekly-total,
+  .privacy-mode #monthly-total,
+  .privacy-mode #yearly-total,
+  .privacy-mode #all-time-total {
+    filter: blur(5px);
+    opacity: 0.7;
+    transition: filter 0.2s ease-out, opacity 0.2s ease-out;
+  }
 }

@@ -1,0 +1,19 @@
+User-agent: *
+Allow: /
+
+# Allow major AI search bots to index the application and LLM documentation
+User-agent: GPTBot
+Allow: /llms.txt
+Allow: /
+
+User-agent: ClaudeBot
+Allow: /llms.txt
+Allow: /
+
+User-agent: PerplexityBot
+Allow: /llms.txt
+Allow: /
+
+User-agent: Applebot
+Allow: /llms.txt
+Allow: /
