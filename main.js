@@ -17,6 +17,7 @@ let currentDisplayedTotal = 0; // For count up animation
 let collapsedBlocks = new Set(); // Set of collapsed block IDs
 let totalAnimationId = null; // Prevent duplicate animations
 let draftTimer = null; // Auto-save draft timer
+let draftGeneration = 0; // 下書き保存の世代番号（古い保存による巻き戻り防止）
 let statusTimeoutId = null; // Status bar notification timer
 let isSaving = false; // Prevent concurrent saves flag
 let lastSavedPasswordHash = ''; // Track password changes via hash
@@ -134,6 +135,7 @@ function setDirty(state) {
   if (state && db) {
     if (draftTimer) clearTimeout(draftTimer);
     draftTimer = setTimeout(async () => {
+        const generation = ++draftGeneration;
         try {
           if (!isDirty) return; // Cancel if no longer dirty at timer execution
 
@@ -148,6 +150,7 @@ function setDirty(state) {
           }
 
           if (!isDirty) return; // Discard if manually saved during async execution
+          if (generation !== draftGeneration) return; // より新しい下書き保存が開始済み
 
           await saveDraft(data);
         } catch (e) {
@@ -421,6 +424,11 @@ function migrateDatabase() {
         db.run('ALTER TABLE records ADD COLUMN sort_order INTEGER DEFAULT 0');
         setDirty(true);
       }
+      // 決済行から元の発生行を辿るための列（エクスポート時の相手科目判定に使う）
+      if (!columns.includes('source_id')) {
+        db.run('ALTER TABLE records ADD COLUMN source_id INTEGER');
+        setDirty(true);
+      }
     }
     // テンプレート用テーブルの作成
     db.run(`
@@ -577,7 +585,8 @@ async function initSQLite() {
             amount INTEGER,
             account TEXT,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            sort_order INTEGER DEFAULT 0
+            sort_order INTEGER DEFAULT 0,
+            source_id INTEGER
           );
         `);
         migrateDatabase();
@@ -595,7 +604,8 @@ async function initSQLite() {
           amount INTEGER,
           account TEXT,
           created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-          sort_order INTEGER DEFAULT 0
+          sort_order INTEGER DEFAULT 0,
+          source_id INTEGER
         );
       `);
 
@@ -836,52 +846,55 @@ function evaluateMath(expr) {
 function addItem(parentId, memo, amount, dateStr, accountStr) {
   const safeMemo = (memo || '').trim();
   if (!safeMemo || amount === '' || amount === null) return;
+
+  // 登録に失敗した場合は入力中の内容を残すため、記憶・フィルター解除・再描画を行わない
+  if (!insertRecord(parentId, safeMemo, amount, dateStr, accountStr)) return;
+
   if (parentId) {
     if (dateStr) lastUsedDates[parentId] = dateStr;
     if (accountStr) lastUsedAccounts[parentId] = accountStr;
   }
 
   if (dateStr) {
-    const today = new Date();
     const todayStr = getTodayString();
     if (dateStr > todayStr) {
       showToast('未来の日付で登録しました', '<span class="text-orange-400">⚠️</span>');
     }
   }
 
-  insertRecord(parentId, safeMemo, amount, dateStr, accountStr);
-
   // フィルター外の日付を追加した場合、自動で「すべての期間」に表示を戻す
+  showAllPeriodsIfOutsideFilter(dateStr);
+
+  renderData(parentId);
+}
+
+// 追加した日付が現在の期間フィルター外なら「すべての期間」に戻す（追加した行が見えなくなるのを防ぐ）
+function showAllPeriodsIfOutsideFilter(dateStr) {
+  if (!dateStr) return;
   const filterVal = document.getElementById('period-filter')?.value;
   let isOutsideFilter = false;
 
   if (window.currentActiveMonths) {
     // カスタム期間（1-3月、今年度など）が適用されている場合
-    if (dateStr) {
-      const match = window.currentActiveMonths.some((m) => dateStr.startsWith(m));
-      if (!match) isOutsideFilter = true;
-    }
+    if (!window.currentActiveMonths.some((m) => dateStr.startsWith(m))) isOutsideFilter = true;
   } else if (filterVal && filterVal !== 'all') {
-    // 単一月のドロップダウンが適用されている場合
-    if (dateStr && !dateStr.startsWith(filterVal)) isOutsideFilter = true;
+    // 単一月・年のドロップダウンが適用されている場合
+    if (!dateStr.startsWith(filterVal)) isOutsideFilter = true;
   }
 
-  // フィルター外だった場合、全体表示にリセット
-  if (isOutsideFilter) {
-    window.currentActiveMonths = null;
-    setActiveQuickPeriodButton(null);
-    if (document.getElementById('period-filter')) {
-      document.getElementById('period-filter').value = 'all';
-    }
+  if (!isOutsideFilter) return;
 
-    // ステータスバーで通知
-    showToast(
-      '追加した日付がフィルター外のため、「すべての期間」に表示を戻しました',
-      '<span class="text-blue-400">👀</span>',
-    );
+  window.currentActiveMonths = null;
+  setActiveQuickPeriodButton(null);
+  if (document.getElementById('period-filter')) {
+    document.getElementById('period-filter').value = 'all';
   }
 
-  renderData(parentId);
+  // ステータスバーで通知
+  showToast(
+    '追加した日付がフィルター外のため、「すべての期間」に表示を戻しました',
+    '<span class="text-blue-400">👀</span>',
+  );
 }
 
 function insertRecord(parentId, memo, amountExpr, dateStr = null, accountStr = null) {
@@ -889,7 +902,7 @@ function insertRecord(parentId, memo, amountExpr, dateStr = null, accountStr = n
   // 金額が入力されたのに数式のパースに失敗した場合（不正な文字列など）は弾く
   if (amountExpr !== null && amountExpr !== '' && parsedAmount === null) {
     alert('金額の入力、または数式が正しくありません。');
-    return;
+    return false;
   }
 
   // 新しいアイテムが常にブロックの一番下に追加されるよう、現在の最大sort_orderを取得
@@ -930,6 +943,7 @@ function insertRecord(parentId, memo, amountExpr, dateStr = null, accountStr = n
     if (stmt) stmt.free();
   }
   setDirty(true);
+  return true;
 }
 
 // 【新機能 1】 過去のメモ履歴を抽出して Datalist に登録する
@@ -1009,25 +1023,8 @@ window.createCollectionRecord = function (id) {
       const today = new Date();
       const dateStr = `${getTodayString()} 00:00:00`;
 
-      const safeAmount = amount ? parseInt(amount, 10) : 0;
-      let isIncome = safeAmount >= 0;
-
-      // 💡 修正1: 科目コードから収入か支出(経費)かをスマート判定
-      const acctCode = FREEWAY_CODE_MAP[account] || '';
-      const isDebitAccount =
-        account !== '売上高' &&
-        account !== '雑収入' &&
-        account !== '売掛金' &&
-        account !== '未収入金' &&
-        account !== '前受金' &&
-        (acctCode.startsWith('8') ||
-          acctCode.startsWith('1') ||
-          acctCode.startsWith('2') ||
-          acctCode.startsWith('3'));
-
-      if (isDebitAccount) {
-        isIncome = !isIncome;
-      }
+      // 💡 修正1: 科目コードから収入か支出(経費)かをスマート判定（エクスポートと同じ判定）
+      const isIncome = isIncomeEntry(amount, account);
 
       const tag = isIncome ? '#入金' : '#支払';
       const newAccount = '普通預金'; // 回収・支払のデフォルト科目
@@ -1053,14 +1050,16 @@ window.createCollectionRecord = function (id) {
       }
 
       insertStmt = db.prepare(
-        'INSERT INTO records (parent_id, memo, amount, account, created_at, sort_order) VALUES (?, ?, ?, ?, ?, ?)',
+        'INSERT INTO records (parent_id, memo, amount, account, created_at, sort_order, source_id) VALUES (?, ?, ?, ?, ?, ?, ?)',
       );
-      insertStmt.run([parent_id, newMemo, amount, newAccount, dateStr, maxSort + 1]);
+      insertStmt.run([parent_id, newMemo, amount, newAccount, dateStr, maxSort + 1, id]);
 
       const res = db.exec('SELECT last_insert_rowid()');
       const newId = res[0].values[0][0];
 
       setDirty(true);
+      // 決済行は今日の日付で作られるため、過去の期間を表示中でも見えるようにする
+      showAllPeriodsIfOutsideFilter(dateStr);
       renderData(parent_id);
 
       showToast(
@@ -1108,7 +1107,20 @@ function updateRecord(id, field, newValue, element) {
       if (val === null) {
         alert('金額の入力、または数式が正しくありません。');
         if (element) {
-          element.classList.add('!bg-red-100', '!text-red-600');
+          // 拒否した文字列が画面に残らないよう、DBの現在値に表示を戻す
+          let revertStmt;
+          try {
+            revertStmt = db.prepare('SELECT amount FROM records WHERE id = ?');
+            revertStmt.bind([id]);
+            if (revertStmt.step()) {
+              const cur = revertStmt.get()[0];
+              const text = cur !== null ? jpyFormatter.format(cur) : '';
+              if (element.tagName === 'INPUT') element.value = text;
+              else element.innerText = text;
+            }
+          } finally {
+            if (revertStmt) revertStmt.free();
+          }
         }
         return;
       }
@@ -1178,12 +1190,14 @@ function updateRecord(id, field, newValue, element) {
   }
 
   // 変更があるかチェック (内容が変わっていない場合は何もしない)
+  let oldVal = null;
   let checkStmt;
   try {
     checkStmt = db.prepare(`SELECT ${field} FROM records WHERE id = ?`);
     checkStmt.bind([id]);
     if (checkStmt.step()) {
       const currentVal = checkStmt.get()[0];
+      oldVal = currentVal;
       if (currentVal == val) {
         // 型の違い（"100"と100など）を許容するため == を使用
         // カンマが除去された表示を元に戻す
@@ -1239,6 +1253,13 @@ function updateRecord(id, field, newValue, element) {
     }
   }
 
+  // タグ集計（PROJECTS）に影響する変更かどうか
+  const hasTag = (s) => /[#＃]/.test(s || '');
+  let affectsTags = false;
+  if (field === 'memo') {
+    affectsTags = hasTag(val) || hasTag(oldVal);
+  }
+
   // ★ 金額や日付が変更された場合のみ再計算・再描画
   if (field === 'amount') {
     // DOM全体を破壊せず、金額表示と合計値のみをソフトに更新する（クリック消失バグ防止）
@@ -1250,6 +1271,8 @@ function updateRecord(id, field, newValue, element) {
       }
     }
     updateTotalsOnly();
+    // タグ（PROJECTS）の合計も、ブロックDOMを壊さずに更新する
+    renderTagSections(computeTagTotals(buildFilteredTree()));
   } else if (field === 'created_at') {
     // ✅ フィルター期間外に変更された場合の神隠し（消失）を防ぐフェイルセーフ
     const filterVal = document.getElementById('period-filter')?.value;
@@ -1297,13 +1320,8 @@ function updateRecord(id, field, newValue, element) {
       });
     }
   } else {
-    // 💡 修正2: メモ内にハッシュタグが含まれる場合は、集計や決済行判定が変わるため再描画を行う
-    if (
-      field === 'memo' &&
-      (val.includes('#') ||
-        val.includes('＃') ||
-        (element && (element.innerText.includes('#') || element.innerText.includes('＃'))))
-    ) {
+    // 💡 修正2: 変更前後のメモにハッシュタグがある場合は、集計や決済行判定が変わるため再描画を行う
+    if (affectsTags) {
       renderData();
 
       if (focusSelector) {
@@ -1593,7 +1611,7 @@ function updatePeriodDropdown() {
 
   let html = `<option value="all">すべての期間</option>`;
   if (years.size > 0) {
-    html += `<optgroup label="--- 年度で絞り込み ---">`;
+    html += `<optgroup label="--- 年で絞り込み ---">`;
     [...years].forEach(
       (y) => (html += `<option value="${escapeHtml(y)}">${escapeHtml(y)}年</option>`),
     );
@@ -1649,8 +1667,8 @@ function setActiveQuickPeriodButton(btn, keepYear = false) {
   btns.forEach((b) => {
     // 🎯 keepYearがtrueの場合、年度系のボタン(今年/今年度/前年度)の点灯は消さずに保持する
     if (keepYear) {
-      const onclickAttr = b.getAttribute('onclick') || '';
-      const isYearGroup = onclickAttr.includes('YearFilter');
+      const action = b.getAttribute('data-action') || '';
+      const isYearGroup = action.includes('YearFilter');
       if (isYearGroup) return; // 年度系ボタンはリセットをスキップ
     }
 
@@ -1843,11 +1861,103 @@ function setFiscalYearFilter(btn = null) {
   renderData();
 }
 
-// 3. ブロック構造の描画
-function renderData(focusBlockId = null) {
-  if (!db) return;
-  const container = document.getElementById('blocks-container');
+// メモ欄から「#タグ」を抽出して集計する（全角ハッシュタグも吸収）
+function computeTagTotals(filteredTree) {
+  const tagTotals = Object.create(null); // プロトタイプ汚染防止
+  filteredTree.forEach((block) => {
+    block.children.forEach((item) => {
+      const safeAmount = parseInt(item.amount || 0, 10);
+      const isCollection = (item.memo || '').match(/#入金|#支払|#決済/);
 
+      const tags = (item.memo || '').match(/[#＃][^\s　,、。\.・()（）「」#＃]+/g) || [];
+      const blockTags = (block.memo || '').match(/[#＃][^\s　,、。\.・()（）「」#＃]+/g) || [];
+      const rawTags = [...tags, ...blockTags].map((t) => t.replace('＃', '#'));
+      let allTags = [...new Set(rawTags)]; // 重複排除と正規化
+
+      // 決済行は元取引のプロジェクトタグを引き継いでいるため、決済タグ以外には計上しない（二重計上防止）
+      if (isCollection) allTags = allTags.filter((tag) => /^#(入金|支払|決済)/.test(tag));
+
+      allTags.forEach((tag) => {
+        if (!tagTotals[tag]) tagTotals[tag] = { amount: 0, items: [] };
+        tagTotals[tag].amount += safeAmount;
+        tagTotals[tag].items.push({
+          date: item.created_at,
+          memo: item.memo,
+          amount: safeAmount,
+        });
+      });
+    });
+  });
+  return tagTotals;
+}
+
+// タグ集計を左側 TOC の下部とスマホ用エリアに（既存表示を置き換えて）描画する
+function renderTagSections(tagTotals) {
+  const tocList = document.getElementById('toc-list');
+  if (tocList) tocList.querySelectorAll('.toc-tag-section').forEach((el) => el.remove());
+
+  // 左側 TOC の下部にタグ一覧を生成
+  if (tocList && Object.keys(tagTotals).length > 0) {
+    const tagDivider = document.createElement('div');
+    tagDivider.className =
+      'toc-tag-section mt-8 font-bold text-slate-400 mb-2 px-2 uppercase text-[10px] tracking-widest flex items-center gap-1';
+    tagDivider.innerHTML = `<svg class="w-3 h-3"><use href="#icon-folder"></use></svg> PROJECTS`;
+    tocList.appendChild(tagDivider);
+
+    // タグを金額が大きい順にソートして表示
+    Object.entries(tagTotals)
+      .sort((a, b) => b[1].amount - a[1].amount)
+      .slice(0, 10) // 💡 ここに .slice(0, 10) を追加すると上位10件のみの表示になります
+      .forEach(([tag, data]) => {
+        const a = document.createElement('a');
+        a.className =
+          'toc-tag-section group block px-2 py-1.5 hover:bg-slate-100 rounded transition-colors cursor-pointer flex justify-between items-center';
+        a.innerHTML = `
+          <span class="text-sm font-medium text-slate-600 group-hover:text-blue-600 transition-colors truncate">${escapeHtml(tag)}</span>
+          <span class="text-[10px] tabular-nums tracking-tight font-bold text-slate-400 bg-slate-100 px-1.5 py-0.5 rounded group-hover:bg-white transition-colors">¥${jpyFormatter.format(data.amount)}</span>
+        `;
+        a.onclick = (e) => {
+          e.preventDefault();
+          showTagModal(tag, data);
+        };
+        tocList.appendChild(a);
+      });
+  }
+
+  // スマホ用のタグ表示エリアを（既存のものがあれば削除して）再生成
+  const mainContainer = document.getElementById('blocks-container');
+  let mobileTagContainer = document.getElementById('mobile-tag-container');
+  if (mobileTagContainer) mobileTagContainer.remove();
+
+  if (Object.keys(tagTotals).length > 0) {
+    mobileTagContainer = document.createElement('div');
+    mobileTagContainer.id = 'mobile-tag-container';
+    mobileTagContainer.className =
+      'xl:hidden mt-12 mb-8 bg-white p-6 rounded-xl border border-slate-200 shadow-sm';
+    mobileTagContainer.innerHTML = `<h3 class="text-xs font-bold text-slate-400 mb-4 tracking-widest flex items-center gap-1"><svg class="w-4 h-4"><use href="#icon-folder"></use></svg> PROJECTS (TAGS)</h3>`;
+
+    const grid = document.createElement('div');
+    grid.className = 'grid grid-cols-2 gap-3';
+
+    Object.entries(tagTotals)
+      .sort((a, b) => b[1].amount - a[1].amount)
+      .slice(0, 10) // 💡 スマホ用表示も同様に制限する場合は追加します
+      .forEach(([tag, data]) => {
+        const btn = document.createElement('button');
+        btn.className =
+          'text-left p-3 rounded-lg bg-slate-50 hover:bg-slate-100 border border-slate-100 transition-colors cursor-pointer flex flex-col gap-1';
+        btn.innerHTML = `<span class="text-sm font-bold text-slate-700 truncate">${escapeHtml(tag)}</span><span class="text-xs tabular-nums tracking-tight text-slate-500">¥${jpyFormatter.format(data.amount)}</span>`;
+        btn.onclick = () => showTagModal(tag, data);
+        grid.appendChild(btn);
+      });
+
+    mobileTagContainer.appendChild(grid);
+    mainContainer.appendChild(mobileTagContainer);
+  }
+}
+
+// DBから期間フィルター適用済みのブロックツリーを構築する
+function buildFilteredTree() {
   const res = db.exec(
     'SELECT id, parent_id, memo, amount, created_at, account FROM records ORDER BY sort_order ASC, id ASC',
   );
@@ -1887,7 +1997,6 @@ function renderData(focusBlockId = null) {
     }
   });
 
-  updatePeriodDropdown();
   const periodFilter = document.getElementById('period-filter')?.value || 'all';
 
   // 配列が指定されているかチェック
@@ -1914,6 +2023,18 @@ function renderData(focusBlockId = null) {
 
   // 親ブロックを「新しいものが一番上」になるようID降順でソート
   filteredTree.sort((a, b) => b.id - a.id);
+
+  return filteredTree;
+}
+
+// 3. ブロック構造の描画
+function renderData(focusBlockId = null) {
+  if (!db) return;
+  const container = document.getElementById('blocks-container');
+
+  updatePeriodDropdown();
+  const periodFilter = document.getElementById('period-filter')?.value || 'all';
+  const filteredTree = buildFilteredTree();
 
   // 合計金額ラベルの表記更新
   const filterEl = document.getElementById('period-filter');
@@ -2082,7 +2203,6 @@ function renderData(focusBlockId = null) {
 
   let currentDomIndex = 0;
   let grandTotal = 0;
-  let tagTotals = Object.create(null); // タグ集計用 (プロトタイプ汚染防止)
 
   filteredTree.forEach((block) => {
     block.children.forEach((item) => {
@@ -2093,22 +2213,6 @@ function renderData(focusBlockId = null) {
       if (!isCollection) {
         grandTotal += safeAmount;
       }
-
-      // メモ欄から「#タグ」を正規表現で抽出して集計（全角ハッシュタグも吸収）
-      const tags = (item.memo || '').match(/[#＃][^\s　,、。\.・()（）「」#＃]+/g) || [];
-      const blockTags = (block.memo || '').match(/[#＃][^\s　,、。\.・()（）「」#＃]+/g) || [];
-      const rawTags = [...tags, ...blockTags].map((t) => t.replace('＃', '#'));
-      const allTags = [...new Set(rawTags)]; // 重複排除と正規化
-
-      allTags.forEach((tag) => {
-        if (!tagTotals[tag]) tagTotals[tag] = { amount: 0, items: [] };
-        tagTotals[tag].amount += safeAmount;
-        tagTotals[tag].items.push({
-          date: item.created_at,
-          memo: item.memo,
-          amount: safeAmount,
-        });
-      });
     });
 
     // 既存のDOMがあれば再利用し、なければ新規作成
@@ -2126,64 +2230,8 @@ function renderData(focusBlockId = null) {
   // 存在しなくなった古いブロックを削除
   existingBlockMap.forEach((el) => el.remove());
 
-  // 左側 TOC の下部にタグ一覧を生成
-  if (tocContainer && Object.keys(tagTotals).length > 0) {
-    const tagDivider = document.createElement('div');
-    tagDivider.className =
-      'toc-tag-section mt-8 font-bold text-slate-400 mb-2 px-2 uppercase text-[10px] tracking-widest flex items-center gap-1';
-    tagDivider.innerHTML = `<svg class="w-3 h-3"><use href="#icon-folder"></use></svg> PROJECTS`;
-    tocContainer.appendChild(tagDivider);
-
-    // タグを金額が大きい順にソートして表示
-    Object.entries(tagTotals)
-      .sort((a, b) => b[1].amount - a[1].amount)
-      .slice(0, 10) // 💡 ここに .slice(0, 10) を追加すると上位10件のみの表示になります
-      .forEach(([tag, data]) => {
-        const a = document.createElement('a');
-        a.className =
-          'group block px-2 py-1.5 hover:bg-slate-100 rounded transition-colors cursor-pointer flex justify-between items-center';
-        a.innerHTML = `
-          <span class="text-sm font-medium text-slate-600 group-hover:text-blue-600 transition-colors truncate">${escapeHtml(tag)}</span>
-          <span class="text-[10px] tabular-nums tracking-tight font-bold text-slate-400 bg-slate-100 px-1.5 py-0.5 rounded group-hover:bg-white transition-colors">¥${jpyFormatter.format(data.amount)}</span>
-        `;
-        a.onclick = (e) => {
-          e.preventDefault();
-          showTagModal(tag, data);
-        };
-        if (tocList) tocList.appendChild(a);
-      });
-  }
-
-  // スマホ用のタグ表示エリアを（既存のものがあれば削除して）再生成
-  const mainContainer = document.getElementById('blocks-container');
-  let mobileTagContainer = document.getElementById('mobile-tag-container');
-  if (mobileTagContainer) mobileTagContainer.remove();
-
-  if (Object.keys(tagTotals).length > 0) {
-    mobileTagContainer = document.createElement('div');
-    mobileTagContainer.id = 'mobile-tag-container';
-    mobileTagContainer.className =
-      'xl:hidden mt-12 mb-8 bg-white p-6 rounded-xl border border-slate-200 shadow-sm';
-    mobileTagContainer.innerHTML = `<h3 class="text-xs font-bold text-slate-400 mb-4 tracking-widest flex items-center gap-1"><svg class="w-4 h-4"><use href="#icon-folder"></use></svg> PROJECTS (TAGS)</h3>`;
-
-    const grid = document.createElement('div');
-    grid.className = 'grid grid-cols-2 gap-3';
-
-    Object.entries(tagTotals)
-      .sort((a, b) => b[1].amount - a[1].amount)
-      .slice(0, 10) // 💡 スマホ用表示も同様に制限する場合は追加します
-      .forEach(([tag, data]) => {
-        const btn = document.createElement('button');
-        btn.className =
-          'text-left p-3 rounded-lg bg-slate-50 hover:bg-slate-100 border border-slate-100 transition-colors cursor-pointer flex flex-col gap-1';
-        btn.innerHTML = `<span class="text-sm font-bold text-slate-700 truncate">${escapeHtml(tag)}</span><span class="text-xs tabular-nums tracking-tight text-slate-500">¥${jpyFormatter.format(data.amount)}</span>`;
-        btn.onclick = () => showTagModal(tag, data);
-        grid.appendChild(btn);
-      });
-
-    mobileTagContainer.appendChild(grid);
-    mainContainer.appendChild(mobileTagContainer);
-  }
+  // 左側 TOC の下部とスマホ用エリアにタグ（PROJECTS）集計を表示
+  renderTagSections(computeTagTotals(filteredTree));
 
   // 数字のアニメーション更新
   animateTotal(Math.round(grandTotal));
@@ -2204,7 +2252,7 @@ function renderData(focusBlockId = null) {
         entries.forEach((entry) => {
           if (entry.isIntersecting) {
             document.querySelectorAll('.toc-item').forEach((el) => {
-              el.classList.remove('text-primary', 'bg-primary-50', 'font-bold');
+              el.classList.remove('text-blue-600', 'bg-blue-50', 'font-bold');
               el.classList.add('text-slate-500', 'font-medium');
             });
             const activeToc = document.querySelector(`.toc-item[href="#${entry.target.id}"]`);
@@ -2572,27 +2620,7 @@ function insertTemplate(templateId) {
   }
 
   // フィルター外の日付を追加した場合、自動で「すべての期間」に表示を戻すフェイルセーフ
-  const filterVal = document.getElementById('period-filter')?.value;
-  let isOutsideFilter = false;
-
-  if (window.currentActiveMonths) {
-    const match = window.currentActiveMonths.some((m) => dateStr.startsWith(m));
-    if (!match) isOutsideFilter = true;
-  } else if (filterVal && filterVal !== 'all') {
-    if (!dateStr.startsWith(filterVal)) isOutsideFilter = true;
-  }
-
-  if (isOutsideFilter) {
-    window.currentActiveMonths = null;
-    setActiveQuickPeriodButton(null);
-    if (document.getElementById('period-filter')) {
-      document.getElementById('period-filter').value = 'all';
-    }
-    showToast(
-      '追加した日付がフィルター外のため、「すべての期間」に表示を戻しました',
-      '<span class="text-blue-400">👀</span>',
-    );
-  }
+  showAllPeriodsIfOutsideFilter(dateStr);
 
   setDirty(true);
   renderData(parentId);
@@ -2674,16 +2702,17 @@ function duplicateRecord(id) {
   let insertStmt;
   try {
     stmt = db.prepare(
-      'SELECT parent_id, memo, amount, account, created_at, sort_order FROM records WHERE id = ?',
+      'SELECT parent_id, memo, amount, account, created_at, sort_order, source_id FROM records WHERE id = ?',
     );
     stmt.bind([id]);
     if (stmt.step()) {
-      const [parent_id, memo, amount, account, created_at, sort_order] = stmt.get();
+      const [parent_id, memo, amount, account, created_at, sort_order, source_id] = stmt.get();
 
+      // 決済行を複製した場合（分割払いなど）も、同じ発生行への紐づけを引き継ぐ
       insertStmt = db.prepare(
-        'INSERT INTO records (parent_id, memo, amount, account, created_at, sort_order) VALUES (?, ?, ?, ?, ?, ?)',
+        'INSERT INTO records (parent_id, memo, amount, account, created_at, sort_order, source_id) VALUES (?, ?, ?, ?, ?, ?, ?)',
       );
-      insertStmt.run([parent_id, memo, amount, account, created_at, sort_order]);
+      insertStmt.run([parent_id, memo, amount, account, created_at, sort_order, source_id]);
 
       // 新しく挿入されたレコードのIDを取得
       const res = db.exec('SELECT last_insert_rowid()');
@@ -2844,7 +2873,7 @@ async function saveGrindFile(isSaveAs = false) {
         document.body.appendChild(a);
         a.click();
         document.body.removeChild(a);
-        URL.revokeObjectURL(url);
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
 
         setDirty(false);
         showToast(
@@ -2889,7 +2918,7 @@ async function saveGrindFile(isSaveAs = false) {
       '<span class="text-green-400">💾</span>',
     );
     showSaveSuccessFeedback();
-    lastSavedPasswordHash = currentPasswordHash;
+    lastSavedPasswordHash = currentHash;
   } catch (err) {
     console.error('Save failed:', err);
     showToast(
@@ -2931,6 +2960,16 @@ async function processFileHandle(handle, isDummy = false) {
     return;
   }
 
+  // 読み込みに失敗・中断した場合に、開いているファイルのパスワード状態を元に戻すための退避
+  const prevMasterKey = currentMasterKey;
+  const prevMasterKeyHash = currentMasterKeyHash;
+  const restorePasswordState = () => {
+    currentMasterKey = prevMasterKey;
+    currentMasterKeyHash = prevMasterKeyHash;
+    updatePasswordUI();
+  };
+  let committed = false; // 新しいDBへの切り替えが完了したか
+
   try {
     const file = await handle.getFile();
 
@@ -2957,12 +2996,14 @@ async function processFileHandle(handle, isDummy = false) {
           }
           Uints = await decryptData(Uints, keyMaterial);
           success = true;
-          lastSavedPasswordHash = currentMasterKeyHash;
         } catch (err) {
           const promptPw = await requestPasswordPrompt(
             'ファイルは暗号化されています。解除パスワードを入力してください:',
           );
-          if (promptPw === null) return; // キャンセルして処理を中断
+          if (promptPw === null) {
+            restorePasswordState(); // 誤入力したパスワードを、開いているファイルに残さない
+            return; // キャンセルして処理を中断
+          }
           
           await setMasterPassword(promptPw);
           keyMaterial = currentMasterKey;
@@ -2970,28 +3011,39 @@ async function processFileHandle(handle, isDummy = false) {
       }
     }
 
-    if (!isEncrypted) {
-      lastSavedPasswordHash = '';
-      await setMasterPassword('');
-    }
-
     let newDb;
     try {
       newDb = new SQL.Database(Uints);
+      // sql.js は不正なバイト列でも生成時には例外を出さないため、ここで中身を検証する
+      const check = newDb.exec(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'records'",
+      );
+      if (check.length === 0) throw new Error('records table not found');
     } catch (e) {
-      throw new Error('Invalid SQLite database file.');
+      if (newDb) newDb.close();
+      throw new Error('Invalid GrindMoney database file.');
+    }
+
+    // 読み込みが確定してから、パスワード状態を新しいファイルに合わせる
+    if (isEncrypted) {
+      lastSavedPasswordHash = currentMasterKeyHash;
+    } else {
+      lastSavedPasswordHash = '';
+      await setMasterPassword('');
     }
 
     if (db) {
       db.close();
     }
     db = newDb;
+    committed = true;
     migrateDatabase();
 
     loadSettingsFromDb(); // ファイル固有の設定をUIに反映
 
     // 🎯 ファイル切り替え時のグローバル状態完全リセット（データ汚染防止）
     lastUsedDates = {};
+    lastUsedAccounts = {};
     collapsedBlocks.clear();
     window.currentActiveMonths = null;
     currentDisplayedTotal = 0;
@@ -3019,6 +3071,8 @@ async function processFileHandle(handle, isDummy = false) {
     }
   } catch (err) {
     console.error('processFileHandle error:', err);
+    // 読み込み前のファイルを開いたままなので、パスワード状態も元に戻す
+    if (!committed) restorePasswordState();
     alert('ファイルの読み込みに失敗しました。');
   }
 }
@@ -3160,6 +3214,79 @@ function exportCSV(format = 'yayoi') {
     return;
   }
 
+  const includeCollection = document.getElementById('export-collections')?.checked;
+  const isCollectionMemo = (m) => /#入金|#支払|#決済/.test(m || '');
+
+  // 決済行と元の発生行の対応（期間フィルターに関係なく、ファイル全体から求める）
+  const { sourceOf, sourceInfo } = getCollectionSources();
+  const settledIds = new Set(sourceOf.values());
+
+  // 決済行の元の発生行に、タグで指定された相手科目（特定できない場合は null）
+  const sourcePartnerOf = (collectionId) => {
+    const info = sourceInfo.get(sourceOf.get(collectionId));
+    return info ? getTaggedPartnerAccount(info.tagMemo, info.isIncome) : null;
+  };
+  // #現金 / #預金 / #振込 の行は、発生時点で支払い（入金）が済んでいる
+  const isPaidOnTheSpotPartner = (partner) => partner === '現金' || partner === '普通預金';
+
+  // 出力対象を確定する（金額が空欄の行は未入力とみなして除外し、明示的な 0 円は残す）
+  let blankAmountCount = 0;
+  let paidOnTheSpotCollectionCount = 0;
+  const rowsToExport = values.filter((row) => {
+    if (row[2] === null || row[2] === '') {
+      blankAmountCount++;
+      return false;
+    }
+    if (isCollectionMemo(row[5])) {
+      // 「自動連携しているため決済行は出力しない」設定の場合はスキップ
+      if (!includeCollection) return false;
+      // その場で支払済みの行の決済行は、同じ支払いを二重に計上するため出力しない
+      if (isPaidOnTheSpotPartner(sourcePartnerOf(row[0]))) {
+        paidOnTheSpotCollectionCount++;
+        return false;
+      }
+    }
+    return true;
+  });
+
+  const exclusionNotes = [];
+  if (blankAmountCount > 0) exclusionNotes.push(`金額未入力の${blankAmountCount}件を除外しました`);
+  if (paidOnTheSpotCollectionCount > 0) {
+    exclusionNotes.push(
+      `その場で支払済みの行に決済行があるため、決済行${paidOnTheSpotCollectionCount}件を除外しました`,
+    );
+  }
+
+  if (rowsToExport.length === 0) {
+    alert(
+      exclusionNotes.length > 0
+        ? `出力できる仕訳がありません。（${exclusionNotes.join('。')}）`
+        : 'エクスポートするデータがありません。',
+    );
+    return;
+  }
+
+  // 科目コード表に無い科目は、収支の向きを判定できず、フリーウェイでは科目コードが 000 になるため事前に確認する
+  const unknownAccounts = new Map();
+  rowsToExport.forEach((row) => {
+    const account = row[4] ? row[4].toString() : '雑費';
+    if (!getFreewayCode(account)) unknownAccounts.set(account, (unknownAccounts.get(account) || 0) + 1);
+  });
+  if (unknownAccounts.size > 0) {
+    const list = [...unknownAccounts]
+      .map(([name, count]) => `・${name}（${count}件）`)
+      .join('\n');
+    const notes = ['・発生行のプラスの金額は「収入」として仕訳されます（費用の場合は貸借が逆になります）。'];
+    if (format === 'freeway') notes.push('・フリーウェイ形式では科目コードが「000」として出力されます。');
+    if (
+      !confirm(
+        `⚠️ 次の科目は科目コード表にありません。\n\n${list}\n\n${notes.join('\n')}\n\nこのまま出力しますか？`,
+      )
+    ) {
+      return;
+    }
+  }
+
   function sanitizeCsvCell(value) {
     let str = value ? value.toString() : '';
     str = str.replace(/\r?\n/g, ' ');
@@ -3186,41 +3313,29 @@ function exportCSV(format = 'yayoi') {
     csvRows.push('"ID","日付","借方勘定科目","貸方勘定科目","金額","摘要"');
   }
 
-  const includeCollection = document.getElementById('export-collections')?.checked;
-
-  values.forEach((row) => {
+  rowsToExport.forEach((row) => {
     const id = row[0];
     const memo = row[1] ? row[1].toString() : '';
     const rawAmount = parseInt(row[2] || 0, 10);
     const absAmount = Math.abs(rawAmount); // 複式簿記のためマイナスを絶対値に変換
-    let isIncome = rawAmount >= 0;
     const account = row[4] ? row[4].toString() : '雑費';
     const childMemo = row[5] ? row[5].toString() : '';
     const escapedMemo = sanitizeCsvCell(memo);
 
     // 🌟 タグ判定による「発生」か「決済(消込)」かの判別
-    const isCollection =
-      childMemo.includes('#入金') || childMemo.includes('#支払') || childMemo.includes('#決済');
-
-    // 「自動連携しているため決済行は出力しない」設定の場合はスキップ
-    if (isCollection && !includeCollection) return;
+    const isCollection = isCollectionMemo(childMemo);
 
     // 🚨 デグレ修正: プラス/マイナス入力された「費用」や「資産」の仕訳をスマート反転
-    const acctCode = FREEWAY_CODE_MAP[account] || '';
-    const isDebitAccount =
-      account !== '売上高' &&
-      account !== '雑収入' &&
-      account !== '売掛金' &&
-      account !== '未収入金' &&
-      account !== '前受金' &&
-      (acctCode.startsWith('8') ||
-        acctCode.startsWith('1') ||
-        acctCode.startsWith('2') ||
-        acctCode.startsWith('3'));
+    let isIncome = isIncomeEntry(rawAmount, account);
 
-    if (isDebitAccount) {
-      isIncome = !isIncome;
+    // 決済行の向きはタグで確定する（口座科目は借方科目扱いのため、符号反転で入出金が逆転するのを防ぐ）
+    if (isCollection) {
+      if (childMemo.includes('#入金')) isIncome = true;
+      else if (childMemo.includes('#支払')) isIncome = false;
     }
+
+    // メモのタグで指定された相手科目（発生行のみ）
+    const taggedPartner = isCollection ? null : getTaggedPartnerAccount(memo, isIncome);
 
     // 🌟 最終調整：空気を読む自動仕訳ロジック
     let debitAcc, creditAcc;
@@ -3229,20 +3344,16 @@ function exportCSV(format = 'yayoi') {
       // --- パターンA: 発生行 ---
       // 収入は「売掛金」、経費は「現金」をデフォルトの相手科目にする
       let partnerAcc = isIncome ? '売掛金' : '現金';
+      let isPartnerSpecified = true; // 利用者のタグや科目による相手科目の指定があるか
 
       // メモに特定のタグがあれば、相手科目を上書き
-      if (memo.includes('#現金')) partnerAcc = '現金';
-      else if (memo.includes('#預金') || memo.includes('#振込')) partnerAcc = '普通預金';
-      else if (
-        memo.includes('#クレカ') ||
-        memo.includes('#カード') ||
-        memo.includes('#未払') ||
-        memo.toUpperCase().includes('AMEX') ||
-        memo.includes('楽天')
-      )
-        partnerAcc = '未払金';
-      else if (memo.includes('#掛')) partnerAcc = isIncome ? '売掛金' : '買掛金';
+      if (taggedPartner) partnerAcc = taggedPartner;
       else if (account === '売掛金' || account === '買掛金') partnerAcc = '普通預金'; // 掛金のデフォルト相手科目
+      else isPartnerSpecified = false;
+
+      // 決済行が作られている経費は、発生時点では未払いだったとみなす
+      // （決済行は「未払金」を消し込むため、発生行が「現金」のままだと支払いが二重になる）
+      if (!isIncome && !isPartnerSpecified && settledIds.has(id)) partnerAcc = '未払金';
 
       if (isIncome) {
         debitAcc = partnerAcc;
@@ -3262,7 +3373,8 @@ function exportCSV(format = 'yayoi') {
         debitAcc = account; // [借] 普通預金 など（画面で指定した口座）
         creditAcc = '売掛金'; // [貸] 売掛金（消込）
       } else {
-        debitAcc = '未払金'; // [借] 未払金（消込）
+        // [借] 未払金（消込）。元の経費が #掛 で買掛金に計上されている場合は買掛金を消し込む
+        debitAcc = sourcePartnerOf(id) === '買掛金' ? '買掛金' : '未払金';
         creditAcc = account; // [貸] 普通預金 など
       }
     }
@@ -3336,8 +3448,8 @@ function exportCSV(format = 'yayoi') {
       let cols = Array(17).fill('');
       cols[0] = id.toString(); // 伝票No (数値として出力)
       cols[3] = fwDate; // 日付 (数値的文字列として出力)
-      cols[5] = FREEWAY_CODE_MAP[debitAcc] || '000'; // 借方科目コード
-      cols[8] = FREEWAY_CODE_MAP[creditAcc] || '000'; // 貸方科目コード
+      cols[5] = getFreewayCode(debitAcc) || '000'; // 借方科目コード
+      cols[8] = getFreewayCode(creditAcc) || '000'; // 貸方科目コード
       cols[10] = absAmount.toString();
       cols[11] = escapedMemo;
       cols[12] = '0';
@@ -3357,6 +3469,11 @@ function exportCSV(format = 'yayoi') {
       if (isCollection) {
         cols[14] = basicCsvCell(hy); // 決済日
         cols[15] = sanitizeCsvCell(account); // 決済口座
+        cols[16] = absAmount.toString();
+      } else if (isPaidOnTheSpotPartner(taggedPartner)) {
+        // #現金 / #預金 / #振込 の行は発生日に決済済みとして出力する（決済行は上で除外済み）
+        cols[14] = basicCsvCell(hy); // 決済日
+        cols[15] = basicCsvCell(taggedPartner); // 決済口座（現金 / 普通預金）
         cols[16] = absAmount.toString();
       }
       csvRows.push(cols.join(','));
@@ -3384,8 +3501,71 @@ function exportCSV(format = 'yayoi') {
   const a = document.createElement('a');
   a.href = url;
   a.download = format === 'freeway' ? 'KAI0000-Shiwake.CSV' : `${format}_${dateSuffix}.csv`;
+  document.body.appendChild(a);
   a.click();
-  URL.revokeObjectURL(url);
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+
+  if (exclusionNotes.length > 0) {
+    showToast(exclusionNotes.join('。'), '<span class="text-orange-400">⚠️</span>', { duration: 6000 });
+  }
+}
+
+// メモのタグから仕訳の相手科目を決める（タグによる指定が無ければ null）
+function getTaggedPartnerAccount(memo, isIncome) {
+  if (memo.includes('#現金')) return '現金';
+  if (memo.includes('#預金') || memo.includes('#振込')) return '普通預金';
+  if (
+    memo.includes('#クレカ') ||
+    memo.includes('#カード') ||
+    memo.includes('#未払') ||
+    memo.toUpperCase().includes('AMEX') ||
+    memo.includes('楽天')
+  )
+    return '未払金';
+  if (memo.includes('#掛')) return isIncome ? '売掛金' : '買掛金';
+  return null;
+}
+
+// 決済行と元の発生行の対応を求める
+// sourceOf: 決済行ID -> 発生行ID
+// sourceInfo: 発生行ID -> { tagMemo: タグ判定用のメモ（ブロック名 + 明細メモ。出力時の判定と同じ範囲）, isIncome }
+// source_id を持たない古い決済行は、同じブロック内で「メモ + (決済)」に一致する行が1件だけの場合に限り結び付ける
+function getCollectionSources() {
+  const sourceOf = new Map();
+  const sourceInfo = new Map();
+  const res = db.exec(
+    'SELECT c.id, c.parent_id, c.memo, c.source_id, p.memo, c.amount, c.account FROM records c LEFT JOIN records p ON p.id = c.parent_id WHERE c.parent_id IS NOT NULL',
+  );
+  if (res.length === 0) return { sourceOf, sourceInfo };
+
+  const isCollectionMemo = (m) => /#入金|#支払|#決済/.test(m || '');
+  const occurrenceIndex = new Map(); // "ブロックID + メモ" -> 一致する発生行IDの配列
+  const legacyCollections = [];
+
+  res[0].values.forEach(([id, parentId, memo, sourceId, blockMemo, amount, account]) => {
+    if (isCollectionMemo(memo)) {
+      if (sourceId !== null && sourceId !== undefined) sourceOf.set(id, sourceId);
+      else legacyCollections.push({ id, parentId, memo: memo || '' });
+    } else {
+      sourceInfo.set(id, {
+        tagMemo: `${blockMemo || ''} ${memo || ''}`,
+        isIncome: isIncomeEntry(amount, account),
+      });
+      const key = `${parentId}\u0000${(memo || '').trim()}`;
+      if (!occurrenceIndex.has(key)) occurrenceIndex.set(key, []);
+      occurrenceIndex.get(key).push(id);
+    }
+  });
+
+  legacyCollections.forEach(({ id, parentId, memo }) => {
+    const match = memo.match(/^(.*?)\s*\(決済\)\s*#(?:入金|支払)\s*$/);
+    if (!match) return;
+    const candidates = occurrenceIndex.get(`${parentId}\u0000${match[1].trim()}`) || [];
+    if (candidates.length === 1) sourceOf.set(id, candidates[0]); // 複数候補は推測しない
+  });
+
+  return { sourceOf, sourceInfo };
 }
 
 // 7. CSVインポート
@@ -3777,22 +3957,33 @@ function executeCSVImport() {
         let parsedDate = new Date(dateStr);
         // YYYY-MM-DD形式等のタイムゾーン問題を回避する
         const dStr = dateStr.trim();
-        if (dStr && /^\d{4}[\/\-]\d{1,2}[\/\-]\d{1,2}$/.test(dStr)) {
-          const parts = dStr.split(/[\/\-]/);
-          parsedDate = new Date(
-            parseInt(parts[0], 10),
-            parseInt(parts[1], 10) - 1,
-            parseInt(parts[2], 10),
+        // 実在しない年月日（2/31、13月など）は Date が繰り上げてしまうため無効化する
+        const strictDate = (y, m, d) => {
+          const dt = new Date(y, m - 1, d);
+          return dt.getFullYear() === y && dt.getMonth() === m - 1 && dt.getDate() === d
+            ? dt
+            : new Date(NaN);
+        };
+        // 末尾の時刻（"2024/01/05 10:30" や "2024-01-05T10:30:00"）は日付判定の対象外にする
+        const TIME_SUFFIX = '(?:[ T]\\d{1,2}:\\d{2}(?::\\d{2})?)?';
+        const ymd = dStr.match(
+          new RegExp(`^(\\d{4})[\\/\\-.年](\\d{1,2})[\\/\\-.月](\\d{1,2})日?${TIME_SUFFIX}$`),
+        );
+        const mdy = dStr.match(new RegExp(`^(\\d{1,2})[\\/\\-.](\\d{1,2})[\\/\\-.](\\d{4})${TIME_SUFFIX}$`));
+        if (ymd) {
+          parsedDate = strictDate(
+            parseInt(ymd[1], 10),
+            parseInt(ymd[2], 10),
+            parseInt(ymd[3], 10),
           );
-        } else if (dStr && /^\d{1,2}[\/\-]\d{1,2}[\/\-]\d{4}$/.test(dStr)) {
-          const parts = dStr.split(/[\/\-]/);
-          const p0 = parseInt(parts[0], 10);
-          const p1 = parseInt(parts[1], 10);
-          const p2 = parseInt(parts[2], 10);
+        } else if (mdy) {
+          const p0 = parseInt(mdy[1], 10);
+          const p1 = parseInt(mdy[2], 10);
+          const p2 = parseInt(mdy[3], 10);
           if (p0 > 12) {
-            parsedDate = new Date(p2, p1 - 1, p0);
+            parsedDate = strictDate(p2, p1, p0);
           } else {
-            parsedDate = new Date(p2, p0 - 1, p1);
+            parsedDate = strictDate(p2, p0, p1);
           }
         }
 
@@ -4074,8 +4265,49 @@ function toggleCommandPalette() {
   }
 }
 
+// パスワード操作（ヘッダーの入力欄は lg 未満で非表示のため、画面幅に関係なく使えるようパレットにも置く）
+function getPasswordCommands() {
+  const commands = [
+    {
+      id: 'password',
+      icon: '<span class="text-base leading-none">🔒</span>',
+      title: currentMasterKey
+        ? 'パスワードを変更する (Password)'
+        : 'パスワードを設定してファイルを暗号化する (Password)',
+      action: async () => {
+        const pw = await requestPasswordPrompt(
+          currentMasterKey
+            ? '新しいパスワードを入力してください:'
+            : 'ファイルを暗号化するパスワードを入力してください:',
+        );
+        if (pw === null) return;
+        if (pw === '') {
+          alert('パスワードが空です。設定を中止しました。');
+          return;
+        }
+        await setMasterPassword(pw);
+        showToast('パスワードを設定しました。次回の保存時に確認と暗号化を行います', '🔒');
+      },
+    },
+  ];
+  if (currentMasterKey) {
+    commands.push({
+      id: 'password-clear',
+      icon: '<span class="text-base leading-none">🔓</span>',
+      title: 'パスワードを解除する (Password)',
+      action: async () => {
+        if (confirm('パスワード設定を解除しますか？\n（次回保存時にファイルが暗号化されなくなります）')) {
+          await setMasterPassword('');
+          showToast('パスワードを解除しました', '🔓');
+        }
+      },
+    });
+  }
+  return commands;
+}
+
 function getDynamicCommands() {
-  let dynamicCommands = [...commandsList];
+  let dynamicCommands = [...commandsList, ...getPasswordCommands()];
   if (db) {
     try {
       const res = db.exec('SELECT id, name FROM templates ORDER BY id DESC');
@@ -4633,6 +4865,50 @@ const FREEWAY_CODE_MAP = {
   前払前渡金: '1410',
 };
 
+// 他社ソフトでよく使われる科目名の別名（保存済みの科目名は変えず、コード表の参照にだけ使う）
+const ACCOUNT_ALIASES = {
+  仕入高: '当期仕入高',
+  商品仕入高: '当期仕入高',
+  期首棚卸高: '期首商品棚卸高',
+  期末商品棚卸高: '期末棚卸高',
+};
+
+function canonicalAccountName(account) {
+  return ACCOUNT_ALIASES[account] || account;
+}
+
+// フリーウェイ科目コード（コード表に無い科目は空文字）
+function getFreewayCode(account) {
+  return FREEWAY_CODE_MAP[canonicalAccountName(account)] || '';
+}
+
+// プラス入力を「費用・資産の増加（借方）」として扱う科目かどうか
+// フリーウェイ科目コードの1桁目で判定し、コード上は同じ区分でも正常残高が貸方の科目を除外する
+const CREDIT_NORMAL_EXCEPTIONS = new Set([
+  '売上高',
+  '雑収入',
+  '受取利息',
+  '受取配当金',
+  '仕入値引戻し高',
+  '期末棚卸高',
+  '売掛金',
+  '未収入金',
+  '前受金',
+]);
+// 金額の符号と科目から、収入側の取引かどうかを判定する（借方科目はプラスが支出側）
+// 科目が空の行は、エクスポート時と同じく「雑費」として扱う
+function isIncomeEntry(amount, account) {
+  const isPositive = parseInt(amount || 0, 10) >= 0;
+  return isDebitNormalAccount(account || '雑費') ? !isPositive : isPositive;
+}
+
+function isDebitNormalAccount(account) {
+  if (CREDIT_NORMAL_EXCEPTIONS.has(canonicalAccountName(account))) return false;
+  const acctCode = getFreewayCode(account);
+  // 9810 専従者給与（青色申告特別控除前の経費）も借方
+  return /^[12389]/.test(acctCode);
+}
+
 function changeAccountDict() {
   const select = document.getElementById('dict-select');
   const dictKey = select.value;
@@ -5014,11 +5290,11 @@ document.addEventListener('drop', async (e) => {
   closeTagModal();
   closeAccountDictEditor();
 
-  // 万が一パスワードプロンプトが開いていたら強制的に隠す
+  // 万が一パスワードプロンプトが開いていたら、キャンセル扱いで閉じる
+  // （非表示にするだけだと待機中の Promise が解決されず、保存処理が isSaving のまま止まる）
   const pwModal = document.getElementById('password-prompt-modal');
   if (pwModal && !pwModal.classList.contains('hidden')) {
-    pwModal.classList.add('hidden');
-    pwModal.classList.remove('flex');
+    document.getElementById('password-prompt-cancel')?.click();
   }
 
   // 拡張子に応じて処理を分岐
@@ -5093,6 +5369,13 @@ function initEventDelegation() {
       else if (action === 'closeAccountDictEditor') closeAccountDictEditor();
       else if (action === 'saveCustomDictAndClose') saveCustomDictAndClose();
       else if (action === 'toggleCommandPalette') toggleCommandPalette();
+      else if (action === 'saveGrindFile') saveGrindFile();
+      else if (action === 'loadGrindFile') loadGrindFile();
+      else if (action === 'dismissDropOverlay') {
+        target.classList.add('hidden');
+        target.classList.remove('flex');
+        dragCounter = 0;
+      }
       else if (action === 'reloadPage') { location.reload(); e.preventDefault(); }
       else if (action === 'setAllCustomAccountsHidden') setAllCustomAccountsHidden(target.getAttribute('data-hidden') === 'true');
       
@@ -5101,7 +5384,11 @@ function initEventDelegation() {
       else if (action === 'duplicateRecord') duplicateRecord(Number(target.getAttribute('data-id')));
       else if (action === 'deleteRecord') deleteRecord(Number(target.getAttribute('data-id')), target.getAttribute('data-is-block') === 'true');
       else if (action === 'saveTemplate') { e.stopPropagation(); saveTemplate(Number(target.getAttribute('data-block-id'))); }
-      else if (action === 'toggleBlock') toggleBlock(Number(target.getAttribute('data-block-id')));
+      else if (action === 'toggleBlock') {
+        // タイトル編集や入力要素のクリックでは折りたたまない
+        if (e.target.closest('h2, [contenteditable], button, input')) return;
+        toggleBlock(Number(target.getAttribute('data-block-id')));
+      }
       else if (action === 'sortBlockByDate') { e.stopPropagation(); sortBlockByDate(Number(target.getAttribute('data-block-id'))); }
       else if (action === 'adjustDate') adjustDate(target, Number(target.getAttribute('data-delta')));
       else if (action === 'moveCustomDictItem') { e.stopPropagation(); moveCustomDictItem(Number(target.getAttribute('data-index')), Number(target.getAttribute('data-delta'))); }

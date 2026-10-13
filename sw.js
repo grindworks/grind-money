@@ -1,5 +1,5 @@
 // 💡 アップデート時はここを v2, v3... と書き換えることで更新が発火します
-const CACHE_NAME = 'grindmoney-v20260628-5';
+const CACHE_NAME = 'grindmoney-v20261013-1';
 const urlsToCache = [
   './',
   './index.html',
@@ -22,7 +22,7 @@ self.addEventListener('install', (event) => {
       // ローカルファイルは通常通り一括追加
       await cache.addAll(urlsToCache.filter((url) => !url.endsWith('.wasm')));
       // WASMは個別にキャッシュ（失敗してもService Worker自体は止めない）
-      cache.add('./assets/sql-wasm.wasm').catch(() => console.warn('WASM cache failed.'));
+      await cache.add('./assets/sql-wasm.wasm').catch(() => console.warn('WASM cache failed.'));
     }),
   );
 });
