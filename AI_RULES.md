@@ -1,5 +1,7 @@
 # GrindMoney AI Rules
 
+> Shared rules for every Grind product: [`../AGENTS.md`](../AGENTS.md). This file adds GrindMoney rules and wins where the two differ.
+
 ## 1. Environment & Architecture
 
 - **Serverless & Offline-First (PWA):** No Backend (No PHP, No Node.js). The application MUST run entirely in the browser using HTML, Vanilla JavaScript, and Tailwind CSS.
