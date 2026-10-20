@@ -119,6 +119,7 @@ function clearMigratedLocalStorageIfPresent() {
 let SQL = null; // sql.js module
 let fileHandle = null; // File System Access API file handle
 let isDirty = false; // Unsaved changes flag
+let dirtyEpoch = 0; // Counts edits so a save can tell whether new ones arrived while it ran
 let pendingCSVData = []; // Temporary storage for CSV parsing
 let lastUsedDates = {}; // Remember last used date per block
 let lastUsedAccounts = {}; // Remember last used account per block
@@ -212,6 +213,8 @@ async function markSecondaryTab() {
   );
   document.body.style.opacity = '0.5';
   document.body.style.pointerEvents = 'none';
+  // inert also blocks keyboard focus and shortcuts reaching the app
+  document.body.inert = true;
 }
 
 // Web Locks gives an atomic "first tab wins"; the lock is held until the tab closes.
@@ -353,6 +356,7 @@ async function flushDraftNow() {
 
 // Unsaved-state flag + UI badge + draft autosave scheduling
 function setDirty(state) {
+  if (state) dirtyEpoch++;
   if (state && db) {
     scheduleDraftSave();
   } else if (!state) {
@@ -420,6 +424,8 @@ function setAppInert(state) {
 // セキュアなパスワード入力プロンプト (Promiseラッパー)
 function requestPasswordPrompt(message) {
   return new Promise((resolve) => {
+    const previousFocus = document.activeElement;
+    window.isSystemModalOpen = true;
     const modal = document.getElementById('password-prompt-modal');
     const msgEl = document.getElementById('password-prompt-message');
     const input = document.getElementById('password-prompt-input');
@@ -436,27 +442,40 @@ function requestPasswordPrompt(message) {
     const cleanup = () => {
       modal.classList.add('hidden');
       modal.classList.remove('flex');
-      setAppInert(false);
+      if (!document.querySelector('.flex[role="dialog"]')) {
+        window.isSystemModalOpen = false;
+        document.body.style.overflow = '';
+        setAppInert(false);
+      }
       btnSubmit.removeEventListener('click', onSubmit);
       btnCancel.removeEventListener('click', onCancel);
-      input.removeEventListener('keydown', onKeyDown);
+      modal.removeEventListener('keydown', onKeyDown);
+      if (previousFocus && previousFocus.focus) previousFocus.focus({ preventScroll: true });
     };
     const onSubmit = () => {
+      const pwd = input.value;
+      input.value = '';
       cleanup();
-      resolve(input.value);
+      resolve(pwd);
     };
     const onCancel = () => {
+      input.value = '';
       cleanup();
       resolve(null);
     };
+    // The handler is on the modal so Escape works from the buttons too; Enter submits only from the field
     const onKeyDown = (e) => {
+      if (e.isComposing || (e.key !== 'Enter' && e.key !== 'Escape')) return;
+      if (e.key === 'Enter' && e.target !== input) return;
+      // Keep the global Escape handler from also closing the modal underneath
+      e.stopPropagation();
       if (e.key === 'Enter') onSubmit();
-      if (e.key === 'Escape') onCancel();
+      else onCancel();
     };
 
     btnSubmit.addEventListener('click', onSubmit);
     btnCancel.addEventListener('click', onCancel);
-    input.addEventListener('keydown', onKeyDown);
+    modal.addEventListener('keydown', onKeyDown);
   });
 }
 
@@ -522,8 +541,13 @@ function appPrompt(message, defaultValue = '', { type = 'text' } = {}) {
     : requestTextPrompt(message, defaultValue);
 }
 
+// An open alert or confirm is closed as cancelled when a newer dialog replaces it
+let pendingAppDialog = null;
+
 function appAlert(message, title = '通知') {
   return new Promise((resolve) => {
+    if (pendingAppDialog) pendingAppDialog();
+    const previousFocus = document.activeElement;
     window.isSystemModalOpen = true;
     document.body.style.overflow = 'hidden';
 
@@ -534,6 +558,7 @@ function appAlert(message, title = '通知') {
 
     modal.classList.remove('hidden');
     modal.classList.add('flex');
+    setAppInert(true);
 
     const okBtn = document.getElementById('custom-alert-ok-btn');
 
@@ -551,16 +576,20 @@ function appAlert(message, title = '通知') {
     };
 
     const cleanup = () => {
+      pendingAppDialog = null;
       modal.classList.add('hidden');
       modal.classList.remove('flex');
       if (!document.querySelector('.flex[role="dialog"]')) {
         window.isSystemModalOpen = false;
         document.body.style.overflow = '';
+        setAppInert(false);
       }
       okBtn.removeEventListener('click', handleOk);
       document.removeEventListener('keydown', handleKeydown, true);
+      if (previousFocus && previousFocus.focus) previousFocus.focus({ preventScroll: true });
     };
 
+    pendingAppDialog = handleOk;
     okBtn.addEventListener('click', handleOk);
     document.addEventListener('keydown', handleKeydown, true);
     setTimeout(() => okBtn.focus(), 10);
@@ -569,6 +598,8 @@ function appAlert(message, title = '通知') {
 
 function appConfirm(message, title = '確認') {
   return new Promise((resolve) => {
+    if (pendingAppDialog) pendingAppDialog();
+    const previousFocus = document.activeElement;
     window.isSystemModalOpen = true;
     document.body.style.overflow = 'hidden';
 
@@ -579,6 +610,7 @@ function appConfirm(message, title = '確認') {
 
     modal.classList.remove('hidden');
     modal.classList.add('flex');
+    setAppInert(true);
 
     const okBtn = document.getElementById('custom-confirm-ok-btn');
     const cancelBtn = document.getElementById('custom-confirm-cancel-btn');
@@ -606,17 +638,21 @@ function appConfirm(message, title = '確認') {
     };
 
     const cleanup = () => {
+      pendingAppDialog = null;
       modal.classList.add('hidden');
       modal.classList.remove('flex');
       if (!document.querySelector('.flex[role="dialog"]')) {
         window.isSystemModalOpen = false;
         document.body.style.overflow = '';
+        setAppInert(false);
       }
       okBtn.removeEventListener('click', handleOk);
       cancelBtn.removeEventListener('click', handleCancel);
       document.removeEventListener('keydown', handleKeydown, true);
+      if (previousFocus && previousFocus.focus) previousFocus.focus({ preventScroll: true });
     };
 
+    pendingAppDialog = handleCancel;
     okBtn.addEventListener('click', handleOk);
     cancelBtn.addEventListener('click', handleCancel);
     document.addEventListener('keydown', handleKeydown, true);
@@ -1136,6 +1172,7 @@ function evaluateMath(expr) {
 
     for (const token of tokens) {
       if (!isNaN(parseFloat(token))) {
+        if (String(token).split('.').length > 2) return null;
         outputQueue.push(parseFloat(token));
       } else if ('+-*/'.includes(token)) {
         while (
@@ -3222,6 +3259,7 @@ async function saveGrindFile(isSaveAs = false) {
     db.run('VACUUM');
 
     let data = db.export();
+    const epochAtExport = dirtyEpoch;
     const hasPasswordSet = currentMasterKey !== null;
     const currentHash = currentMasterKeyHash;
 
@@ -3317,7 +3355,7 @@ async function saveGrindFile(isSaveAs = false) {
         document.body.removeChild(a);
         setTimeout(() => URL.revokeObjectURL(url), 1000);
 
-        setDirty(false);
+        if (dirtyEpoch === epochAtExport) setDirty(false);
         clearMigratedLocalStorageIfPresent();
         showToast(
           `データを "${a.download}" としてダウンロードしました`,
@@ -3354,7 +3392,7 @@ async function saveGrindFile(isSaveAs = false) {
     const writable = await fileHandle.createWritable();
     await writable.write(data);
     await writable.close();
-    setDirty(false);
+    if (dirtyEpoch === epochAtExport) setDirty(false);
     clearMigratedLocalStorageIfPresent();
 
     showToast(
@@ -4310,22 +4348,22 @@ async function executeCSVImport() {
   let suggestStmt = null;
   let insertStmt = null;
 
+  const startIndex = Math.max(0, skipRows);
+  const MAX_IMPORT_ROWS = 3000;
+  const rowsToProcess = dataToImport.length - startIndex;
+  // Ask before BEGIN: a draft save during an open transaction would close the database under it
+  if (rowsToProcess > MAX_IMPORT_ROWS) {
+    await appAlert(
+      `⚠️ データが多すぎます（${rowsToProcess}行）。\nブラウザのフリーズを防ぐため、最初の${MAX_IMPORT_ROWS}行のみをインポートします。\n残りのデータはCSVを分割してインポートしてください。`,
+    );
+  }
+  const endIndex = Math.min(dataToImport.length, startIndex + MAX_IMPORT_ROWS);
+
   db.run('BEGIN TRANSACTION;');
   try {
     db.run('INSERT INTO records (memo, amount) VALUES (?, ?)', ['CSVインポート', null]);
     const parentRes = db.exec('SELECT last_insert_rowid()');
     const parentId = parentRes[0].values[0][0];
-
-    const startIndex = Math.max(0, skipRows);
-
-    const MAX_IMPORT_ROWS = 3000;
-    const rowsToProcess = dataToImport.length - startIndex;
-    if (rowsToProcess > MAX_IMPORT_ROWS) {
-      await appAlert(
-        `⚠️ データが多すぎます（${rowsToProcess}行）。\nブラウザのフリーズを防ぐため、最初の${MAX_IMPORT_ROWS}行のみをインポートします。\n残りのデータはCSVを分割してインポートしてください。`,
-      );
-    }
-    const endIndex = Math.min(dataToImport.length, startIndex + MAX_IMPORT_ROWS);
 
     try {
       suggestStmt = db.prepare(
@@ -4910,6 +4948,15 @@ function renderCommandList(query = '') {
 document.addEventListener('keydown', (e) => {
   const key = e.key?.toLowerCase();
   if (!key) return; // キー情報が取得できない特殊なイベントは無視
+
+  // Shortcuts must not reach the app behind an open dialog
+  const isAppShortcut =
+    ((e.metaKey || e.ctrlKey) && ['KeyK', 'KeyS', 'KeyO'].includes(e.code)) ||
+    (e.altKey && e.code === 'KeyN');
+  if (isAppShortcut && window.isSystemModalOpen && !isCommandPaletteOpen) {
+    e.preventDefault();
+    return;
+  }
 
   if ((e.metaKey || e.ctrlKey) && (key === 'k' || key === 'ｋ' || e.code === 'KeyK')) {
     e.preventDefault();
