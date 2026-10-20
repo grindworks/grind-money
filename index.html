@@ -498,6 +498,20 @@
             >
               ↓ アプリとしてインストール
             </button>
+            <!-- 科目辞書選択 -->
+            <label for="dict-select" class="sr-only">科目辞書を選択</label>
+            <select
+              id="dict-select"
+              class="cursor-pointer rounded-md border border-slate-200 bg-white px-2 py-2 text-xs text-slate-700 shadow-sm transition-colors outline-none focus:border-primary"
+              title="入力時にサジェストする科目辞書を選択"
+            >
+              <option value="custom">辞書: カスタム</option>
+              <option value="none">科目サジェスト: オフ</option>
+              <option value="yayoi">辞書: 弥生会計</option>
+              <option value="freee">辞書: freee</option>
+              <option value="mf">辞書: マネーフォワード</option>
+              <option value="freeway">辞書: フリーウェイ</option>
+            </select>
             <form
               id="password-form"
               class="relative hidden lg:flex items-center"
@@ -552,20 +566,6 @@
               </div>
             </form>
 
-            <!-- 科目辞書選択 -->
-            <label for="dict-select" class="sr-only">科目辞書を選択</label>
-            <select
-              id="dict-select"
-              class="cursor-pointer rounded-md border border-slate-200 bg-white px-2 py-2 text-xs text-slate-700 shadow-sm transition-colors outline-none focus:border-primary"
-              title="入力時にサジェストする科目辞書を選択"
-            >
-              <option value="custom">辞書: カスタム</option>
-              <option value="none">科目サジェスト: オフ</option>
-              <option value="yayoi">辞書: 弥生会計</option>
-              <option value="freee">辞書: freee</option>
-              <option value="mf">辞書: マネーフォワード</option>
-              <option value="freeway">辞書: フリーウェイ</option>
-            </select>
 
 
 

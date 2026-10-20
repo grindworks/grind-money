@@ -23,6 +23,8 @@
 ## 4. Known gaps against shared §7
 
 - `build.sh` runs `npx tailwindcss` (pinned to 4.3.1 in `package.json`) instead of a pinned standalone binary.
-- Japanese comments in `main.js`, `index.html`, `input.css`, `sw.js` and `.gitignore`.
+- Japanese comments in `main.js`, `index.html`, `input.css` and `.gitignore`.
+- `showToast` takes an options object (`{ duration, rawHtml }`) instead of `type`.
+- `appPrompt` ignores `title` (the text prompt always says 入力), and the text and password dialogs use `rounded-xl` where the shared rule says `rounded-2xl`.
 - Japanese `console.*` messages in `main.js` (about 13 lines). Japanese text in thrown `Error` messages is UI text and stays until it moves to `lang/`.
 - `sw.js` has an `offline.html` fallback; keep it in the precache, and keep its text bilingual.
