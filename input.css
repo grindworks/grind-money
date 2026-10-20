@@ -11,7 +11,7 @@
     -apple-system, BlinkMacSystemFont, "Segoe UI", "Hiragino Sans", "Hiragino Kaku Gothic ProN",
     "Noto Sans JP", "Yu Gothic UI", Meiryo, sans-serif;
 
-  /* アニメーション定義 */
+  /* Animation definitions */
   --animate-modal-in: modalIn 0.25s cubic-bezier(0.16, 1, 0.3, 1) forwards;
   --animate-modal-overlay: modalOverlay 0.2s ease-out forwards;
   --animate-toast-in: toastIn 0.4s cubic-bezier(0.16, 1, 0.3, 1) forwards;
@@ -25,13 +25,13 @@
   --animate-ripple: ripple 0.6s ease-out;
 }
 
-/* 1. クラス名の抽出対象ファイルを明示的に指定 */
+/* 1. Source files scanned for class names */
 @source "./index.html";
 @source "./main.js";
 
-/* --- カスタムキーフレーム定義 --- */
+/* --- Custom keyframes --- */
 
-/* モーダルの出現アニメーション */
+/* Modal enter animation */
 @keyframes modalIn {
   0% {
     opacity: 0;
@@ -43,7 +43,7 @@
   }
 }
 
-/* モーダル背景のフェードイン */
+/* Modal backdrop fade-in */
 @keyframes modalOverlay {
   0% {
     opacity: 0;
@@ -53,7 +53,7 @@
   }
 }
 
-/* トースト通知のスライドイン */
+/* Toast slide-in */
 @keyframes toastIn {
   0% {
     opacity: 0;
@@ -65,7 +65,7 @@
   }
 }
 
-/* トースト通知のフェードアウト */
+/* Toast fade-out */
 @keyframes toastOut {
   0% {
     opacity: 1;
@@ -77,7 +77,7 @@
   }
 }
 
-/* ブロック追加時のエントランスアニメーション */
+/* Entrance animation for added blocks */
 @keyframes blockEnter {
   0% {
     opacity: 0;
@@ -89,7 +89,7 @@
   }
 }
 
-/* グロウパルスエフェクト */
+/* Glow pulse effect */
 @keyframes glowPulse {
   0%,
   100% {
@@ -100,7 +100,7 @@
   }
 }
 
-/* フェードインアニメーション */
+/* Fade-in animation */
 @keyframes fadeIn {
   0% {
     opacity: 0;
@@ -110,7 +110,7 @@
   }
 }
 
-/* スライドアップアニメーション */
+/* Slide-up animation */
 @keyframes slideUp {
   0% {
     opacity: 0;
@@ -122,7 +122,7 @@
   }
 }
 
-/* フローティングアニメーション (空状態のアイコン用) */
+/* Floating animation (empty-state icon) */
 @keyframes float {
   0%,
   100% {
@@ -133,7 +133,7 @@
   }
 }
 
-/* 成功フラッシュ (入力完了時) */
+/* Success flash (after input) */
 @keyframes successFlash {
   0% {
     background-color: rgba(16, 185, 129, 0.15);
@@ -143,7 +143,7 @@
   }
 }
 
-/* リップルエフェクト */
+/* Ripple effect */
 @keyframes ripple {
   0% {
     transform: scale(0);
@@ -155,7 +155,7 @@
   }
 }
 
-/* トーストのプログレスバー */
+/* Toast progress bar */
 @keyframes toastProgress {
   0% {
     width: 100%;
@@ -165,7 +165,7 @@
   }
 }
 
-/* --- ユーティリティレイヤー拡張 --- */
+/* --- Utility layer extensions --- */
 @utility scrollbar-hide {
   -ms-overflow-style: none;
   scrollbar-width: none;
@@ -174,9 +174,9 @@
   }
 }
 
-/* --- カスタムスタイル --- */
+/* --- Custom styles --- */
 
-/* モーダルのアニメーション用ユーティリティ */
+/* Utilities for modal animation */
 @utility animate-modal-in {
   animation: var(--animate-modal-in);
 }
@@ -210,14 +210,14 @@
 }
 
 @layer base {
-  /* フォーカスリングの統一スタイル */
+  /* Shared focus ring style */
   :focus-visible {
     outline: 2px solid var(--color-primary);
     outline-offset: 2px;
     border-radius: 4px;
   }
 
-  /* View Transition の対象を明細リストに限定し、画面全体のモッサリ感を排除 */
+  /* Limit View Transition to the line-item list so the whole screen does not lag */
   :root {
     view-transition-name: none;
   }

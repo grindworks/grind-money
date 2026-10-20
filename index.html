@@ -1219,10 +1219,10 @@
       class="animate-modal-overlay fixed inset-0 z-[100] hidden items-center justify-center bg-black/20 p-4 backdrop-blur-sm"
     >
       <div
-        class="animate-modal-in flex w-full max-w-sm flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-2xl"
+        class="animate-modal-in flex w-full max-w-sm flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl"
       >
         <div class="border-b border-slate-100 px-6 py-5">
-          <h3 class="text-lg font-bold text-slate-900">パスワードの入力</h3>
+          <h3 id="password-prompt-title" class="text-lg font-bold text-slate-900">パスワードの入力</h3>
         </div>
         <form class="space-y-4 px-6 py-6" data-action="prevent-submit">
           <p id="password-prompt-message" class="text-sm text-slate-600">
@@ -1326,7 +1326,7 @@
       class="fixed inset-0 z-[200] hidden touch-none items-center justify-center bg-black/50 p-4 backdrop-blur-sm"
     >
       <div
-        class="animate-modal-in flex w-full max-w-sm touch-auto flex-col overflow-hidden overscroll-contain rounded-xl border border-slate-200 bg-white shadow-2xl"
+        class="animate-modal-in flex w-full max-w-sm touch-auto flex-col overflow-hidden overscroll-contain rounded-2xl border border-slate-200 bg-white shadow-2xl"
       >
         <div class="border-b border-slate-100 px-6 py-5">
           <h3

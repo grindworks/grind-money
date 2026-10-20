@@ -196,7 +196,7 @@ function openDB() {
       request.onsuccess = () => resolve(request.result);
       request.onerror = () => reject(request.error);
     } catch (e) {
-      console.warn('IndexedDBがブロックされています。ドラフト自動保存は無効化されます。');
+      console.warn('IndexedDB is blocked. Draft autosave is disabled.');
       reject(e);
     }
   });
@@ -422,12 +422,13 @@ function setAppInert(state) {
 }
 
 // セキュアなパスワード入力プロンプト (Promiseラッパー)
-function requestPasswordPrompt(message) {
+function requestPasswordPrompt(message, title = 'パスワードの入力') {
   return new Promise((resolve) => {
     const previousFocus = document.activeElement;
     window.isSystemModalOpen = true;
     const modal = document.getElementById('password-prompt-modal');
     const msgEl = document.getElementById('password-prompt-message');
+    document.getElementById('password-prompt-title').textContent = title;
     const input = document.getElementById('password-prompt-input');
     const btnSubmit = document.getElementById('password-prompt-submit');
     const btnCancel = document.getElementById('password-prompt-cancel');
@@ -480,11 +481,12 @@ function requestPasswordPrompt(message) {
 }
 
 // Shared dialog API: appAlert, appConfirm and appPrompt return Promises (native alert/confirm/prompt are not used)
-function requestTextPrompt(message, defaultValue = '') {
+function requestTextPrompt(message, defaultValue = '', title = '入力') {
   return new Promise((resolve) => {
     window.isSystemModalOpen = true;
     const modal = document.getElementById('text-prompt-modal');
     const msgEl = document.getElementById('text-prompt-message');
+    document.getElementById('text-prompt-title').textContent = title;
     const input = document.getElementById('text-prompt-input');
     const btnSubmit = document.getElementById('text-prompt-submit');
     const btnCancel = document.getElementById('text-prompt-cancel');
@@ -535,10 +537,10 @@ function requestTextPrompt(message, defaultValue = '') {
   });
 }
 
-function appPrompt(message, defaultValue = '', { type = 'text' } = {}) {
+function appPrompt(message, defaultValue = '', { type = 'text', title } = {}) {
   return type === 'password'
-    ? requestPasswordPrompt(message)
-    : requestTextPrompt(message, defaultValue);
+    ? requestPasswordPrompt(message, title)
+    : requestTextPrompt(message, defaultValue, title);
 }
 
 // An open alert or confirm is closed as cancelled when a newer dialog replaces it
@@ -865,7 +867,7 @@ function migrateDatabase() {
         if (insertStmt) insertStmt.free();
       }
     } catch (e) {
-      console.warn('マイグレーションの実行をスキップしました', e);
+      console.warn('Skipped running the migration', e);
     }
   } catch (e) {
     console.error('Migration error:', e);
@@ -974,7 +976,7 @@ async function initSQLite() {
 
         showToast('未保存データを復元しました', '<span class="text-orange-400">↺</span>');
       } catch (dbError) {
-        console.error('ドラフトの復元に失敗しました。データが破損しています。', dbError);
+        console.error('Failed to restore the draft. The data is damaged.', dbError);
         await appAlert('⚠️ 前回の未保存データが破損しているため、復元を中止しました。');
         try {
           if (db) db.close();
@@ -1435,7 +1437,7 @@ window.createCollectionRecord = async function (id) {
           if (val !== null) maxSort = val;
         }
       } catch (e) {
-        console.warn('ソート順の取得に失敗しました', e);
+        console.warn('Failed to read the sort order', e);
       } finally {
         if (sortStmt) sortStmt.free();
       }
@@ -1706,7 +1708,7 @@ async function updateRecord(id, field, newValue, element) {
             }
           }
         } catch (e) {
-          console.warn('フォーカスの復元をスキップしました(不正なセレクタ等)', e);
+          console.warn('Skipped restoring focus (invalid selector)', e);
         }
       });
     }
@@ -1731,7 +1733,7 @@ async function updateRecord(id, field, newValue, element) {
               }
             }
           } catch (e) {
-            console.warn('フォーカスの復元をスキップしました(不正なセレクタ等)', e);
+            console.warn('Skipped restoring focus (invalid selector)', e);
           }
         });
       }
@@ -3161,7 +3163,7 @@ async function sortBlockByDate(blockId) {
     renderData();
     showToast('日付順に並べ替えました', '🧹');
   } catch (e) {
-    console.error('並べ替えに失敗しました', e);
+    console.error('Failed to reorder', e);
   } finally {
     if (updateStmt) updateStmt.free();
   }
@@ -3428,7 +3430,7 @@ async function saveGrindFile(isSaveAs = false) {
             }
           }
         } catch (e) {
-          console.warn('フォーカスの復元をスキップしました(不正なセレクタ等)', e);
+          console.warn('Skipped restoring focus (invalid selector)', e);
         }
       });
     }
@@ -4370,7 +4372,7 @@ async function executeCSVImport() {
         "SELECT account FROM records WHERE parent_id IS NOT NULL AND memo = ? AND account IS NOT NULL AND account != '' ORDER BY id DESC LIMIT 1",
       );
     } catch (e) {
-      console.warn('科目サジェストSQLの準備に失敗しました', e);
+      console.warn('Failed to prepare the account suggestion SQL', e);
     }
 
     try {
@@ -4378,7 +4380,7 @@ async function executeCSVImport() {
         'INSERT INTO records (parent_id, memo, amount, created_at, account) VALUES (?, ?, ?, ?, ?)',
       );
     } catch (e) {
-      console.warn('インポート用SQLの準備に失敗しました', e);
+      console.warn('Failed to prepare the import SQL', e);
     }
 
     const strictDate = (y, m, d) => {
@@ -4555,7 +4557,7 @@ GrindMoneyがインポートで必要とするデータは以下の4つです：
       showToast('AI用プロンプトをコピーしました', '📋');
     })
     .catch((err) => {
-      console.error('コピーに失敗しました', err);
+      console.error('Failed to copy', err);
     });
 }
 
@@ -4608,7 +4610,7 @@ async function copyAsMarkdown() {
       showToast(`${rows.length} 件を Markdown でコピーしました`, '📋');
     })
     .catch((err) => {
-      console.error('コピーに失敗しました', err);
+      console.error('Failed to copy', err);
       showToast('コピーに失敗しました', '<span class="text-red-400">❌</span>');
     });
 }
@@ -5781,7 +5783,7 @@ document.addEventListener('drop', async (e) => {
           try {
             handle = await item.getAsFileSystemHandle();
           } catch (err) {
-            console.warn('ファイルハンドルの取得に失敗しました。フォールバックします:', err);
+            console.warn('Failed to get the file handle. Falling back:', err);
           }
         }
         break;
