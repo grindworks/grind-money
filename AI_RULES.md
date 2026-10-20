@@ -6,7 +6,7 @@
 
 - Vanilla JavaScript, no frontend framework.
 - Wasm SQLite (`sql.js`): the database lives in memory. Manage memory explicitly (`stmt.free()`, `db.close()` before re-instantiating) to prevent leaks.
-- Tailwind CSS v4.3.1 from npm devDependencies (`@tailwindcss/cli`, `tailwindcss`); `./build.sh` runs `npx tailwindcss`. npm is a development tool only; nothing from `node_modules` ships.
+- Tailwind CSS v4.3.1 from npm devDependencies (`@tailwindcss/cli`, `tailwindcss`, pinned); `./build.sh` runs `npx tailwindcss`. npm is a development tool only; nothing from `node_modules` ships.
 
 ## 2. Data and files
 
@@ -22,7 +22,7 @@
 
 ## 4. Known gaps against shared §7
 
-- The Tailwind version is a `^` range in `package.json`, not pinned, and `build.sh` runs `npx tailwindcss` instead of the pinned binary.
+- `build.sh` runs `npx tailwindcss` (pinned to 4.3.1 in `package.json`) instead of a pinned standalone binary.
 - Japanese comments in `main.js`, `index.html`, `input.css`, `sw.js` and `.gitignore`.
 - Japanese `console.*` messages in `main.js` (about 13 lines). Japanese text in thrown `Error` messages is UI text and stays until it moves to `lang/`.
 - `sw.js` has an `offline.html` fallback; keep it in the precache, and keep its text bilingual.
