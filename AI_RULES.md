@@ -23,8 +23,6 @@
 
 - UI language is Japanese only and the strings are inline in `index.html` and `main.js`. Move them to `lang/ja.js` and `lang/en.js` with the shared `i18n.js`, then add the language choice.
 - `main.js` calls the browser's `alert()`, `confirm()` and `prompt()` about 50 times; money has no `appAlert()`, `appConfirm()` and `appPrompt()` yet. Do not add new native dialogs; port grind-qrcoder's three functions when touching a dialog.
-- Colors use `blue-600` (56 places) instead of the `primary` token. Because `primary` equals `blue-600`, migrate by replacing the classes without changing the look.
-- Fonts: `--font-sans` differs from the shared stack.
 - The Tailwind version is a `^` range in `package.json`, not pinned, and `build.sh` runs `npx tailwindcss` instead of the pinned binary.
 - The top bar has no file-name badge with the unsaved marker; add it.
 - Japanese comments in `main.js`, `index.html`, `input.css`, `sw.js` and `.gitignore`.

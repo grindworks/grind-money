@@ -18,6 +18,7 @@
     />
     <!-- Robots Meta Tag for Max Indexing -->
     <meta name="robots" content="index, follow, max-snippet:-1, max-image-preview:large, max-video-preview:-1" />
+    <meta name="color-scheme" content="light" />
     <title>GrindMoney - Serverless Edition</title>
 
     <!-- OSのステータスバー色 -->
@@ -115,7 +116,7 @@
   </head>
 
   <body
-    class="min-h-[100dvh] overscroll-none bg-slate-50 font-sans text-slate-900 antialiased transition-colors duration-300 selection:bg-blue-600/30"
+    class="min-h-[100dvh] overscroll-none bg-slate-50 font-sans text-slate-900 antialiased transition-colors duration-300 selection:bg-primary/30"
     style="scrollbar-gutter: stable; overscroll-behavior: none"
   >
     <!-- SEO Fallback for Crawlers -->
@@ -450,7 +451,7 @@
                 id="toc-filter"
                 aria-label="目次を絞り込み"
                 placeholder="目次を絞り込み..."
-                class="w-full rounded-md border border-slate-200 bg-slate-100 py-1.5 pr-2 pl-7 text-xs text-slate-700 transition-colors outline-none focus:border-blue-600 focus:bg-white"
+                class="w-full rounded-md border border-slate-200 bg-slate-100 py-1.5 pr-2 pl-7 text-xs text-slate-700 transition-colors outline-none focus:border-primary focus:bg-white"
                 autocomplete="off"
               />
             </div>
@@ -468,9 +469,9 @@
           <!-- 左側：タイトル & ファイル名 -->
           <div class="flex max-w-full min-w-0 shrink-0 flex-col gap-2">
             <h1
-              class="flex items-center gap-2 text-2xl font-extrabold tracking-tight text-blue-950 transition-colors"
+              class="flex items-center gap-2 text-2xl font-extrabold tracking-tight text-slate-900 transition-colors"
             >
-              <span class="text-blue-600"
+              <span class="text-primary"
                 ><svg class="h-6 w-6">
                   <use href="#icon-money"></use></svg
               ></span>
@@ -493,7 +494,7 @@
             <!-- インストールボタン (PWA) -->
             <button
               id="install-button"
-              class="hidden shrink-0 rounded-md bg-blue-600 px-4 py-2 text-sm font-bold text-white shadow-sm transition-all hover:bg-blue-700"
+              class="hidden shrink-0 rounded-md bg-primary px-4 py-2 text-sm font-bold text-white shadow-sm transition-all hover:bg-primary-hover"
             >
               ↓ アプリとしてインストール
             </button>
@@ -512,7 +513,7 @@
                   placeholder="暗号化パスワード..."
                   autocomplete="new-password"
                   data-lpignore="true"
-                  class="w-36 rounded-md border border-slate-200 bg-white py-2 pr-8 pl-3 text-sm text-blue-950 placeholder-slate-400 shadow-sm transition-all outline-none focus:border-blue-600"
+                  class="w-36 rounded-md border border-slate-200 bg-white py-2 pr-8 pl-3 text-sm text-slate-900 placeholder-slate-400 shadow-sm transition-all outline-none focus:border-primary"
                   title="パスワードを入力すると保存時にファイルを強力に暗号化します"
                 />
                 <button
@@ -555,7 +556,7 @@
             <label for="dict-select" class="sr-only">科目辞書を選択</label>
             <select
               id="dict-select"
-              class="cursor-pointer rounded-md border border-slate-200 bg-white px-2 py-2 text-xs text-slate-700 shadow-sm transition-colors outline-none focus:border-blue-600"
+              class="cursor-pointer rounded-md border border-slate-200 bg-white px-2 py-2 text-xs text-slate-700 shadow-sm transition-colors outline-none focus:border-primary"
               title="入力時にサジェストする科目辞書を選択"
             >
               <option value="custom">辞書: カスタム</option>
@@ -571,7 +572,7 @@
             <button
               id="btn-open-file"
               data-action="loadGrindFile"
-              class="shrink-0 cursor-pointer rounded-md border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-600 shadow-sm transition-colors hover:bg-slate-100 hover:text-blue-950"
+              class="shrink-0 cursor-pointer rounded-md border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-600 shadow-sm transition-colors hover:bg-slate-100 hover:text-slate-900"
               title="開く"
             >
               <svg class="h-4 w-4">
@@ -581,7 +582,7 @@
             <button
               id="btn-save"
               data-action="saveGrindFile"
-              class="relative shrink-0 cursor-pointer rounded-md border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-blue-950 shadow-sm transition-colors hover:bg-slate-100"
+              class="relative shrink-0 cursor-pointer rounded-md border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-900 shadow-sm transition-colors hover:bg-slate-100"
               title="保存"
             >
               <svg class="h-4 w-4">
@@ -598,7 +599,7 @@
             <button
               id="btn-cmd-palette"
               data-action="toggleCommandPalette"
-              class="flex shrink-0 cursor-pointer items-center gap-2 rounded-md border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-600 shadow-sm transition-colors hover:bg-slate-100 hover:text-blue-950"
+              class="flex shrink-0 cursor-pointer items-center gap-2 rounded-md border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-600 shadow-sm transition-colors hover:bg-slate-100 hover:text-slate-900"
               title="コマンドパレットを開く"
             >
               <svg class="h-4 w-4">
@@ -670,13 +671,13 @@
                 </label>
                 <select
                   id="period-filter"
-                  class="w-full cursor-pointer appearance-none bg-transparent pr-6 text-xl font-extrabold text-slate-800 transition-colors outline-none hover:text-blue-600 sm:w-auto sm:text-2xl"
+                  class="w-full cursor-pointer appearance-none bg-transparent pr-6 text-xl font-extrabold text-slate-800 transition-colors outline-none hover:text-primary sm:w-auto sm:text-2xl"
                 >
                   <option value="all">すべての期間</option>
                 </select>
                 <!-- ドロップダウン用の矢印アイコン -->
                 <svg
-                  class="pointer-events-none absolute right-0 bottom-1.5 h-4 w-4 text-slate-400 transition-colors group-hover:text-blue-600"
+                  class="pointer-events-none absolute right-0 bottom-1.5 h-4 w-4 text-slate-400 transition-colors group-hover:text-primary"
                 >
                   <use href="#icon-chevron-down"></use>
                 </svg>
@@ -689,7 +690,7 @@
                   <button
                     id="floating-save-btn"
                     data-action="saveGrindFile"
-                    class="animate-modal-in z-50 hidden items-center gap-1.5 rounded-full bg-blue-600 px-3 py-1 text-[11px] font-bold text-white shadow-sm transition-all hover:bg-blue-700 active:scale-95"
+                    class="animate-modal-in z-50 hidden items-center gap-1.5 rounded-full bg-primary px-3 py-1 text-[11px] font-bold text-white shadow-sm transition-all hover:bg-primary-hover active:scale-95"
                   >
                     <span class="relative flex h-2 w-2">
                       <span
@@ -707,7 +708,7 @@
                   </p>
                 </div>
                 <p
-                  class="text-4xl font-black tracking-tight break-words text-blue-950 tabular-nums sm:text-5xl md:text-6xl"
+                  class="text-4xl font-black tracking-tight break-words text-slate-900 tabular-nums sm:text-5xl md:text-6xl"
                   id="grand-total"
                 >
                   <span id="grand-total-num">0</span>
@@ -733,29 +734,29 @@
               <div class="mx-0.5 h-4 w-px bg-slate-200"></div>
               <button
                 data-action="setMultiMonthFilter" data-months="1,2,3"
-                data-active-classes="!bg-blue-600 !text-white !border-blue-600"
-                class="cursor-pointer rounded border border-blue-100 bg-blue-50 px-2 py-1 text-[10px] font-bold text-blue-600 shadow-sm transition-colors hover:border-blue-600 hover:bg-blue-600 hover:text-white"
+                data-active-classes="!bg-primary !text-white !border-primary"
+                class="cursor-pointer rounded border border-primary-100 bg-primary-50 px-2 py-1 text-[10px] font-bold text-primary shadow-sm transition-colors hover:border-primary hover:bg-primary hover:text-white"
               >
                 1-3月
               </button>
               <button
                 data-action="setMultiMonthFilter" data-months="4,5,6"
-                data-active-classes="!bg-blue-600 !text-white !border-blue-600"
-                class="cursor-pointer rounded border border-blue-100 bg-blue-50 px-2 py-1 text-[10px] font-bold text-blue-600 shadow-sm transition-colors hover:border-blue-600 hover:bg-blue-600 hover:text-white"
+                data-active-classes="!bg-primary !text-white !border-primary"
+                class="cursor-pointer rounded border border-primary-100 bg-primary-50 px-2 py-1 text-[10px] font-bold text-primary shadow-sm transition-colors hover:border-primary hover:bg-primary hover:text-white"
               >
                 4-6月
               </button>
               <button
                 data-action="setMultiMonthFilter" data-months="7,8,9"
-                data-active-classes="!bg-blue-600 !text-white !border-blue-600"
-                class="cursor-pointer rounded border border-blue-100 bg-blue-50 px-2 py-1 text-[10px] font-bold text-blue-600 shadow-sm transition-colors hover:border-blue-600 hover:bg-blue-600 hover:text-white"
+                data-active-classes="!bg-primary !text-white !border-primary"
+                class="cursor-pointer rounded border border-primary-100 bg-primary-50 px-2 py-1 text-[10px] font-bold text-primary shadow-sm transition-colors hover:border-primary hover:bg-primary hover:text-white"
               >
                 7-9月
               </button>
               <button
                 data-action="setMultiMonthFilter" data-months="10,11,12"
-                data-active-classes="!bg-blue-600 !text-white !border-blue-600"
-                class="cursor-pointer rounded border border-blue-100 bg-blue-50 px-2 py-1 text-[10px] font-bold text-blue-600 shadow-sm transition-colors hover:border-blue-600 hover:bg-blue-600 hover:text-white"
+                data-active-classes="!bg-primary !text-white !border-primary"
+                class="cursor-pointer rounded border border-primary-100 bg-primary-50 px-2 py-1 text-[10px] font-bold text-primary shadow-sm transition-colors hover:border-primary hover:bg-primary hover:text-white"
               >
                 10-12月
               </button>
@@ -805,7 +806,7 @@
           >
             <div class="pointer-events-none absolute inset-y-0 left-0 flex items-center">
               <span
-                class="pl-2 text-3xl font-light text-slate-400 transition-colors group-hover:text-blue-600"
+                class="pl-2 text-3xl font-light text-slate-400 transition-colors group-hover:text-primary"
                 >+</span
               >
             </div>
@@ -814,7 +815,7 @@
               type="text"
               id="new-block-memo"
               data-action="handleNewBlockKeydown"
-              class="w-full border-b-2 border-slate-200 bg-transparent py-4 pr-4 pl-10 text-2xl font-extrabold text-blue-950 placeholder-slate-400 transition-colors outline-none focus:border-blue-600"
+              class="w-full border-b-2 border-slate-200 bg-transparent py-4 pr-4 pl-10 text-2xl font-extrabold text-slate-900 placeholder-slate-400 transition-colors outline-none focus:border-primary"
             />
             <button type="submit" class="hidden">追加</button>
           </form>
@@ -823,7 +824,7 @@
           <div id="block-controls" class="mb-6 hidden items-center justify-end gap-4 pr-2">
             <button
               data-action="toggleAllBlocks" data-open="false"
-              class="flex cursor-pointer items-center gap-1 text-[11px] font-bold text-slate-400 transition-colors hover:text-slate-700 focus:text-blue-600 focus:outline-none"
+              class="flex cursor-pointer items-center gap-1 text-[11px] font-bold text-slate-400 transition-colors hover:text-slate-700 focus:text-primary focus:outline-none"
             >
               <svg class="h-3.5 w-3.5">
                 <use href="#icon-chevron-down"></use>
@@ -832,7 +833,7 @@
             </button>
             <button
               data-action="toggleAllBlocks" data-open="true"
-              class="flex cursor-pointer items-center gap-1 text-[11px] font-bold text-slate-400 transition-colors hover:text-slate-700 focus:text-blue-600 focus:outline-none"
+              class="flex cursor-pointer items-center gap-1 text-[11px] font-bold text-slate-400 transition-colors hover:text-slate-700 focus:text-primary focus:outline-none"
             >
               <svg class="h-3.5 w-3.5 -rotate-90">
                 <use href="#icon-chevron-down"></use>
@@ -851,13 +852,13 @@
           class="fixed inset-0 z-[9999] hidden flex-col items-center justify-center bg-white px-6 py-20 text-center"
         >
           <div class="mb-4 text-6xl drop-shadow-sm">💥</div>
-          <h2 class="mb-2 text-2xl font-extrabold text-blue-950">アプリの起動に失敗しました</h2>
+          <h2 class="mb-2 text-2xl font-extrabold text-slate-900">アプリの起動に失敗しました</h2>
           <p class="mb-6 max-w-md text-sm leading-relaxed text-slate-600">
             必須ファイルが読み込めませんでした。<br />通信環境を確認し、ページを再読み込みしてください。
           </p>
           <button
             data-action="reloadPage"
-            class="rounded-lg bg-blue-600 px-6 py-3 font-bold text-white shadow-sm transition-all hover:bg-blue-700 active:scale-95"
+            class="rounded-lg bg-primary px-6 py-3 font-bold text-white shadow-sm transition-all hover:bg-primary-hover active:scale-95"
           >
             ページを再読み込み
           </button>
@@ -887,7 +888,7 @@
         class="animate-modal-in flex max-h-[90vh] w-full max-w-2xl flex-col rounded-xl border border-slate-200 bg-white shadow-2xl transition-colors"
       >
         <div class="flex shrink-0 items-center justify-between border-b border-slate-100 px-6 py-5">
-          <h3 class="text-lg font-bold text-blue-950">CSVインポート設定</h3>
+          <h3 class="text-lg font-bold text-slate-900">CSVインポート設定</h3>
           <button
             data-action="closeCSVModal"
             class="text-2xl leading-none text-slate-400 hover:text-slate-600"
@@ -905,7 +906,7 @@
               <select
                 id="map-date"
                 data-action="renderCSVPreview"
-                class="w-full rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-blue-950 outline-none focus:border-blue-600"
+                class="w-full rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-900 outline-none focus:border-primary"
               ></select>
             </div>
             <div>
@@ -915,7 +916,7 @@
               <select
                 id="map-account"
                 data-action="renderCSVPreview"
-                class="w-full rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-blue-950 outline-none focus:border-blue-600"
+                class="w-full rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-900 outline-none focus:border-primary"
               ></select>
             </div>
             <div>
@@ -925,7 +926,7 @@
               <select
                 id="map-memo"
                 data-action="renderCSVPreview"
-                class="w-full rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-blue-950 outline-none focus:border-blue-600"
+                class="w-full rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-900 outline-none focus:border-primary"
               ></select>
             </div>
             <div>
@@ -935,7 +936,7 @@
               <select
                 id="map-amount"
                 data-action="renderCSVPreview"
-                class="w-full rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-blue-950 outline-none focus:border-blue-600"
+                class="w-full rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-900 outline-none focus:border-primary"
               ></select>
             </div>
           </div>
@@ -944,7 +945,7 @@
               >データプレビュー (最初の数行)</label
             >
             <div
-              class="overflow-x-auto rounded-md border border-slate-200 focus:ring-2 focus:ring-blue-600/50 focus:outline-none"
+              class="overflow-x-auto rounded-md border border-slate-200 focus:ring-2 focus:ring-primary/50 focus:outline-none"
               tabindex="0"
             >
               <table class="w-full text-left text-xs whitespace-nowrap text-slate-500">
@@ -961,7 +962,7 @@
               value="1"
               min="0"
               data-action="renderCSVPreview"
-              class="w-16 rounded-md border border-slate-200 bg-slate-50 px-2 py-1 text-center text-blue-950 outline-none focus:border-blue-600"
+              class="w-16 rounded-md border border-slate-200 bg-slate-50 px-2 py-1 text-center text-slate-900 outline-none focus:border-primary"
             />
             <span>行をスキップする</span>
           </div>
@@ -970,7 +971,7 @@
             <select
               id="csv-encoding"
               data-action="updateCSVPreview"
-              class="w-auto rounded-md border border-slate-200 bg-slate-50 px-2 py-1 text-sm text-blue-950 outline-none focus:border-blue-600"
+              class="w-auto rounded-md border border-slate-200 bg-slate-50 px-2 py-1 text-sm text-slate-900 outline-none focus:border-primary"
             >
               <option value="utf-8">UTF-8</option>
               <option value="sjis">Shift_JIS</option>
@@ -988,7 +989,7 @@
           </button>
           <button
             data-action="executeCSVImport"
-            class="rounded-md bg-blue-600 px-4 py-2 text-sm font-bold text-white shadow-sm transition-colors hover:bg-blue-700"
+            class="rounded-md bg-primary px-4 py-2 text-sm font-bold text-white shadow-sm transition-colors hover:bg-primary-hover"
           >
             インポート実行
           </button>
@@ -1009,7 +1010,7 @@
         class="animate-modal-in w-full max-w-md overflow-hidden rounded-xl border border-slate-200 bg-white shadow-2xl transition-colors"
       >
         <div class="flex items-center justify-between border-b border-slate-100 px-6 py-5">
-          <h3 class="text-lg font-bold text-blue-950">CSVエクスポート</h3>
+          <h3 class="text-lg font-bold text-slate-900">CSVエクスポート</h3>
           <button
             data-action="closeExportModal"
             class="text-2xl leading-none text-slate-400 hover:text-slate-600"
@@ -1023,14 +1024,14 @@
           <!-- エクスポート対象期間の表示 -->
           <div
             id="export-period-info"
-            class="rounded-md border border-blue-200 bg-blue-50 px-3 py-2.5 text-xs font-medium text-blue-700"
+            class="rounded-md border border-blue-200 bg-primary-50 px-3 py-2.5 text-xs font-medium text-blue-700"
           ></div>
 
           <div>
             <label for="export-format" class="sr-only">出力フォーマット</label>
             <select
               id="export-format"
-              class="w-full rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-blue-950 outline-none focus:border-blue-600"
+              class="w-full rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-900 outline-none focus:border-primary"
             >
               <option value="yayoi">弥生会計</option>
               <option value="freee">freee会計</option>
@@ -1044,11 +1045,11 @@
               <input
                 type="checkbox"
                 id="export-collections"
-                class="mt-0.5 rounded border-slate-300 text-blue-600 focus:ring-blue-600"
+                class="mt-0.5 rounded border-slate-300 text-primary focus:ring-primary"
                 checked
               />
               <div class="text-sm">
-                <b class="mb-0.5 block font-bold text-blue-950"
+                <b class="mb-0.5 block font-bold text-slate-900"
                   >回収・支払の仕訳（消込）を出力する</b
                 >
                 <span class="block text-[11px] leading-tight text-slate-500"
@@ -1073,7 +1074,7 @@
           </button>
           <button
             data-action="executeExport"
-            class="rounded-md bg-blue-600 px-4 py-2 text-sm font-bold text-white shadow-sm transition-colors hover:bg-blue-700"
+            class="rounded-md bg-primary px-4 py-2 text-sm font-bold text-white shadow-sm transition-colors hover:bg-primary-hover"
           >
             エクスポート
           </button>
@@ -1096,10 +1097,10 @@
         <div
           class="flex items-center justify-between border-b border-slate-100 bg-slate-50/80 px-6 py-5 backdrop-blur-md"
         >
-          <h3 class="flex items-center gap-2 text-lg font-bold text-blue-950">
+          <h3 class="flex items-center gap-2 text-lg font-bold text-slate-900">
             <span
               id="tag-modal-title"
-              class="inline-block max-w-[200px] truncate rounded-md border border-blue-600/20 bg-blue-50 px-2 py-1 align-bottom font-mono text-sm tracking-widest text-blue-600 sm:max-w-xs"
+              class="inline-block max-w-[200px] truncate rounded-md border border-primary/20 bg-primary-50 px-2 py-1 align-bottom font-mono text-sm tracking-widest text-primary sm:max-w-xs"
               >#TAG</span
             >
           </h3>
@@ -1140,7 +1141,7 @@
         class="animate-modal-in flex max-h-[80vh] w-full max-w-md flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-2xl transition-colors"
       >
         <div class="flex shrink-0 items-center justify-between border-b border-slate-100 px-6 py-5">
-          <h3 class="text-lg font-bold text-blue-950">カスタム科目辞書の編集</h3>
+          <h3 class="text-lg font-bold text-slate-900">カスタム科目辞書の編集</h3>
           <button
             data-action="closeAccountDictEditor"
             class="text-2xl leading-none text-slate-400 hover:text-slate-600"
@@ -1157,14 +1158,14 @@
               <button
                 type="button"
                 data-action="setAllCustomAccountsHidden" data-hidden="false"
-                class="rounded-md bg-blue-50 px-2 py-1 text-[11px] font-bold text-blue-600 transition-colors hover:text-blue-700"
+                class="rounded-md bg-primary-50 px-2 py-1 text-[11px] font-bold text-primary transition-colors hover:text-blue-700"
               >
                 すべて表示
               </button>
               <button
                 type="button"
                 data-action="setAllCustomAccountsHidden" data-hidden="true"
-                class="rounded-md bg-slate-100 px-2 py-1 text-[11px] font-bold text-slate-600 transition-colors hover:text-blue-950"
+                class="rounded-md bg-slate-100 px-2 py-1 text-[11px] font-bold text-slate-600 transition-colors hover:text-slate-900"
               >
                 すべて非表示
               </button>
@@ -1181,11 +1182,11 @@
               type="text"
               id="new-custom-account"
               placeholder="新しい科目を追加"
-              class="w-full rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-blue-950 outline-none focus:border-blue-600"
+              class="w-full rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-900 outline-none focus:border-primary"
             />
             <button
               type="submit"
-              class="shrink-0 rounded-md bg-blue-600 px-4 py-2 text-sm font-bold whitespace-nowrap text-white shadow-sm transition-colors hover:bg-blue-700"
+              class="shrink-0 rounded-md bg-primary px-4 py-2 text-sm font-bold whitespace-nowrap text-white shadow-sm transition-colors hover:bg-primary-hover"
             >
               追加
             </button>
@@ -1202,7 +1203,7 @@
           </button>
           <button
             data-action="saveCustomDictAndClose"
-            class="rounded-md bg-blue-600 px-4 py-2 text-sm font-bold text-white shadow-sm transition-colors hover:bg-blue-700"
+            class="rounded-md bg-primary px-4 py-2 text-sm font-bold text-white shadow-sm transition-colors hover:bg-primary-hover"
           >
             保存して閉じる
           </button>
@@ -1221,7 +1222,7 @@
         class="animate-modal-in flex w-full max-w-sm flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-2xl"
       >
         <div class="border-b border-slate-100 px-6 py-5">
-          <h3 class="text-lg font-bold text-blue-950">パスワードの入力</h3>
+          <h3 class="text-lg font-bold text-slate-900">パスワードの入力</h3>
         </div>
         <form class="space-y-4 px-6 py-6" data-action="prevent-submit">
           <p id="password-prompt-message" class="text-sm text-slate-600">
@@ -1232,7 +1233,7 @@
             type="password"
             id="password-prompt-input"
             aria-labelledby="password-prompt-message"
-            class="w-full rounded-md border border-slate-200 bg-slate-50 px-4 py-2 text-lg text-blue-950 outline-none focus:border-blue-600"
+            class="w-full rounded-md border border-slate-200 bg-slate-50 px-4 py-2 text-lg text-slate-900 outline-none focus:border-primary"
             autocomplete="new-password"
             data-lpignore="true"
           />
@@ -1246,7 +1247,7 @@
           </button>
           <button
             id="password-prompt-submit"
-            class="rounded-md bg-blue-600 px-4 py-2 text-sm font-bold text-white shadow-sm transition-colors hover:bg-blue-700"
+            class="rounded-md bg-primary px-4 py-2 text-sm font-bold text-white shadow-sm transition-colors hover:bg-primary-hover"
           >
             OK
           </button>
@@ -1258,10 +1259,10 @@
     <div
       id="drop-overlay"
       data-action="dismissDropOverlay"
-      class="fixed inset-0 z-[200] hidden cursor-pointer items-center justify-center border-4 border-dashed border-blue-600 bg-slate-900/80 backdrop-blur-sm transition-opacity"
+      class="fixed inset-0 z-[200] hidden cursor-pointer items-center justify-center border-4 border-dashed border-primary bg-slate-900/80 backdrop-blur-sm transition-opacity"
     >
       <div class="pointer-events-none text-center">
-        <svg class="mx-auto mb-4 h-16 w-16 text-blue-600">
+        <svg class="mx-auto mb-4 h-16 w-16 text-primary">
           <use href="#icon-folder"></use>
         </svg>
         <h2 class="text-3xl font-extrabold tracking-tight text-white">
@@ -1297,7 +1298,7 @@
             autocomplete="off"
             spellcheck="false"
             data-lpignore="true"
-            class="w-full bg-transparent font-sans text-xl font-medium text-blue-950 placeholder-slate-400 outline-none"
+            class="w-full bg-transparent font-sans text-xl font-medium text-slate-900 placeholder-slate-400 outline-none"
           />
           <span
             class="absolute right-4 rounded bg-slate-100 px-2 py-1 font-mono text-[10px] text-slate-400"

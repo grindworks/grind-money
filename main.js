@@ -1831,9 +1831,9 @@ function updatePeriodDropdown() {
     customOpt.disabled = true;
     select.insertBefore(customOpt, select.firstChild);
     select.value = 'custom';
-    select.classList.add('!text-blue-600');
+    select.classList.add('!text-primary');
   } else {
-    select.classList.remove('!text-blue-600');
+    select.classList.remove('!text-primary');
     if (select.querySelector(`option[value="${currentVal}"]`)) {
       select.value = currentVal;
     } else {
@@ -1864,8 +1864,8 @@ function setActiveQuickPeriodButton(btn, keepYear = false) {
       if (isYearGroup) return; // 年度系ボタンはリセットをスキップ
     }
 
-    b.classList.remove('ring-2', 'ring-blue-600', 'ring-offset-1'); // 古い仕様の枠線をクリア
-    b.classList.remove('!bg-blue-600', '!text-white', '!border-blue-600'); // 色反転をクリア
+    b.classList.remove('ring-2', 'ring-primary', 'ring-offset-1'); // 古い仕様の枠線をクリア
+    b.classList.remove('!bg-primary', '!text-white', '!border-primary'); // 色反転をクリア
 
     const activeClasses = b.getAttribute('data-active-classes');
     if (activeClasses) {
@@ -2122,7 +2122,7 @@ function renderTagSections(tagTotals) {
       a.className =
         'toc-tag-section group block px-2 py-1.5 hover:bg-slate-100 rounded transition-colors cursor-pointer flex justify-between items-center';
       a.innerHTML = `
-        <span class="text-sm font-medium text-slate-600 group-hover:text-blue-600 transition-colors truncate">${escapeHtml(tag)}</span>
+        <span class="text-sm font-medium text-slate-600 group-hover:text-primary transition-colors truncate">${escapeHtml(tag)}</span>
         <span class="text-[10px] tabular-nums tracking-tight font-bold text-slate-400 bg-slate-100 px-1.5 py-0.5 rounded group-hover:bg-white transition-colors">¥${jpyFormatter.format(data.amount)}</span>
       `;
       a.onclick = (e) => {
@@ -2136,7 +2136,7 @@ function renderTagSections(tagTotals) {
       tocList.appendChild(
         createTagToggleButton(
           sortedTags.length,
-          'toc-tag-section block w-full text-left px-2 py-1.5 text-xs font-medium text-blue-600 hover:bg-slate-100 rounded transition-colors cursor-pointer',
+          'toc-tag-section block w-full text-left px-2 py-1.5 text-xs font-medium text-primary hover:bg-slate-100 rounded transition-colors cursor-pointer',
           tagTotals,
         ),
       );
@@ -2172,7 +2172,7 @@ function renderTagSections(tagTotals) {
       mobileTagContainer.appendChild(
         createTagToggleButton(
           sortedTags.length,
-          'mt-4 w-full text-center py-2 text-xs font-medium text-blue-600 hover:bg-slate-50 rounded-lg transition-colors cursor-pointer',
+          'mt-4 w-full text-center py-2 text-xs font-medium text-primary hover:bg-slate-50 rounded-lg transition-colors cursor-pointer',
           tagTotals,
         ),
       );
@@ -2281,7 +2281,7 @@ function renderData(focusBlockId = null) {
       const a = document.createElement('a');
       a.href = `#block-${block.id}`;
       a.className =
-        'toc-item block px-2 py-1 hover:text-blue-950 hover:bg-slate-100 rounded truncate transition-colors text-slate-500 cursor-pointer text-sm font-medium';
+        'toc-item block px-2 py-1 hover:text-slate-900 hover:bg-slate-100 rounded truncate transition-colors text-slate-500 cursor-pointer text-sm font-medium';
       a.textContent = block.memo;
       a.title = block.memo;
       a.onclick = (e) => {
@@ -2343,7 +2343,7 @@ function renderData(focusBlockId = null) {
                 </div>
               </div>
 
-              <h2 class="text-2xl sm:text-3xl font-extrabold text-blue-950 mb-3 tracking-tight">該当する記録がありません</h2>
+              <h2 class="text-2xl sm:text-3xl font-extrabold text-slate-900 mb-3 tracking-tight">該当する記録がありません</h2>
               <p class="text-sm text-slate-500 max-w-sm mx-auto leading-relaxed mb-8">
                 指定された期間（フィルター）にはデータが存在しません。<br>フィルター条件を変更して再度お試しください。
               </p>
@@ -2382,22 +2382,22 @@ function renderData(focusBlockId = null) {
            <div class="relative z-10 flex flex-col items-center">
               <!-- アイコングループを完全にフラット化 -->
               <div class="relative flex items-center justify-center mb-6">
-                <div class="relative w-16 h-16 bg-blue-100 rounded-full flex items-center justify-center border border-blue-200">
-                  <svg class="w-8 h-8 text-blue-600"><use href="#icon-money"></use></svg>
+                <div class="relative w-16 h-16 bg-primary-100 rounded-full flex items-center justify-center border border-blue-200">
+                  <svg class="w-8 h-8 text-primary"><use href="#icon-money"></use></svg>
                 </div>
               </div>
 
-              <h2 class="text-2xl sm:text-3xl font-extrabold text-blue-950 mb-3 tracking-tight">Welcome to GrindMoney</h2>
+              <h2 class="text-2xl sm:text-3xl font-extrabold text-slate-900 mb-3 tracking-tight">Welcome to GrindMoney</h2>
               <p class="text-sm text-slate-500 max-w-md mx-auto leading-relaxed mb-8">
                 .money ファイルをドラッグ＆ドロップするか、<br>上の入力欄から最初のブロックを作成しましょう。
               </p>
 
               <!-- ボタンから shadow-blue-500/30 などの光彩を削除し、shadow-sm に統一 -->
               <div class="flex flex-col sm:flex-row items-center gap-3">
-                <button data-action="focusNewBlockMemo" class="bg-blue-600 hover:bg-blue-700 text-white px-6 py-3 rounded-full text-sm font-bold shadow-sm transition-all active:scale-95 flex items-center gap-2">
+                <button data-action="focusNewBlockMemo" class="bg-primary hover:bg-primary-hover text-white px-6 py-3 rounded-full text-sm font-bold shadow-sm transition-all active:scale-95 flex items-center gap-2">
                   <span class="text-lg font-light leading-none mb-0.5">+</span> 新しいブロックを作る
                 </button>
-                <button data-action="clickCsvInput" class="bg-white hover:bg-blue-50 text-blue-700 border border-blue-200 px-6 py-3 rounded-full text-sm font-bold shadow-sm transition-all active:scale-95 flex items-center gap-2">
+                <button data-action="clickCsvInput" class="bg-white hover:bg-primary-50 text-blue-700 border border-blue-200 px-6 py-3 rounded-full text-sm font-bold shadow-sm transition-all active:scale-95 flex items-center gap-2">
                   <svg class="w-4 h-4"><use href="#icon-import"></use></svg> CSVをインポート
                 </button>
               </div>
@@ -2475,13 +2475,13 @@ function renderData(focusBlockId = null) {
         entries.forEach((entry) => {
           if (entry.isIntersecting) {
             document.querySelectorAll('.toc-item').forEach((el) => {
-              el.classList.remove('text-blue-600', 'bg-blue-50', 'font-bold');
+              el.classList.remove('text-primary', 'bg-primary-50', 'font-bold');
               el.classList.add('text-slate-500', 'font-medium');
             });
             const activeToc = document.querySelector(`.toc-item[href="#${entry.target.id}"]`);
             if (activeToc) {
               activeToc.classList.remove('text-slate-500', 'font-medium');
-              activeToc.classList.add('text-blue-600', 'bg-blue-50', 'font-bold');
+              activeToc.classList.add('text-primary', 'bg-primary-50', 'font-bold');
               const tocContainer = document.getElementById('toc-container');
               if (tocContainer && !tocContainer.matches(':hover')) {
                 // scrollIntoViewはページ全体のスクロールを阻害してカクつきを生むため、コンテナ内の相対位置で安全にスクロールさせる
@@ -2601,7 +2601,7 @@ function updateOrCreateBlockElement(block, existingEl = null) {
     // 決済行の場合は科目の色をミュートする
     const accClasses = isCollection
       ? 'text-slate-400 bg-transparent border-transparent hover:bg-slate-100 focus:bg-slate-100'
-      : 'text-blue-600 bg-blue-50 border-blue-200 hover:bg-blue-100 focus:bg-blue-100';
+      : 'text-primary bg-primary-50 border-blue-200 hover:bg-primary-100 focus:bg-primary-100';
 
     let accountDisp = `<input type="text" data-id="${item.id}" data-field="account" aria-label="科目" list="account-suggestions" value="${escapeHtml(accStr)}" placeholder="科目"     class="text-xs px-1.5 py-0.5 rounded mr-2 outline-none focus:ring-2 focus:ring-blue-400 cursor-text transition-colors w-[84px] sm:w-[100px] shrink-0 text-left placeholder-blue-300 border ${accClasses}">`;
 
@@ -2620,13 +2620,13 @@ function updateOrCreateBlockElement(block, existingEl = null) {
         <div class="flex items-center flex-1 min-w-0">
           ${dateDisp}
           ${accountDisp}
-          <span data-id="${item.id}" data-field="memo" contenteditable="true" role="textbox" aria-label="メモ"     class="${isCollection ? 'text-slate-500' : 'text-blue-950'} font-medium truncate outline-none focus:bg-blue-50 focus:ring-2 focus:ring-blue-200 px-1 rounded cursor-text transition-colors empty:inline-block empty:min-w-12 empty:bg-slate-100 empty:before:content-['✎_未入力'] empty:before:text-slate-400 empty:before:text-xs empty:before:font-normal empty:before:pointer-events-none empty:focus:before:opacity-50">${escapeHtml(item.memo)}</span>
+          <span data-id="${item.id}" data-field="memo" contenteditable="true" role="textbox" aria-label="メモ"     class="${isCollection ? 'text-slate-500' : 'text-slate-900'} font-medium truncate outline-none focus:bg-primary-50 focus:ring-2 focus:ring-blue-200 px-1 rounded cursor-text transition-colors empty:inline-block empty:min-w-12 empty:bg-slate-100 empty:before:content-['✎_未入力'] empty:before:text-slate-400 empty:before:text-xs empty:before:font-normal empty:before:pointer-events-none empty:focus:before:opacity-50">${escapeHtml(item.memo)}</span>
         </div>
         <div class="flex items-center space-x-1.5 sm:space-x-4 ml-2 sm:ml-auto shrink-0">
-          <input type="text" data-id="${item.id}" data-field="amount" aria-label="金額" inputmode="decimal" placeholder="0" value="${item.amount !== null && item.amount !== '' && item.amount !== undefined ? jpyFormatter.format(item.amount) : ''}"      class="bg-transparent border-0 p-0 font-medium tabular-nums tracking-tight ${isCollection ? 'text-slate-400' : 'text-blue-950'} text-right outline-none focus:bg-blue-50 focus:ring-2 focus:ring-blue-200 px-1 rounded cursor-text transition-colors w-[50px] sm:w-[80px]"><span class="text-slate-400 text-xs font-sans hidden sm:inline">円</span>
+          <input type="text" data-id="${item.id}" data-field="amount" aria-label="金額" inputmode="decimal" placeholder="0" value="${item.amount !== null && item.amount !== '' && item.amount !== undefined ? jpyFormatter.format(item.amount) : ''}"      class="bg-transparent border-0 p-0 font-medium tabular-nums tracking-tight ${isCollection ? 'text-slate-400' : 'text-slate-900'} text-right outline-none focus:bg-primary-50 focus:ring-2 focus:ring-blue-200 px-1 rounded cursor-text transition-colors w-[50px] sm:w-[80px]"><span class="text-slate-400 text-xs font-sans hidden sm:inline">円</span>
           <div class="flex items-center space-x-0.5 sm:space-x-1 md:opacity-0 md:group-hover/item:opacity-100 focus-within:opacity-100 transition-opacity">
             ${checkBtnHtml}
-            <button data-action="duplicateRecord" data-id="${item.id}" aria-label="複製" class="text-slate-300 hover:text-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-600/30 rounded p-1.5 sm:p-2 -m-1 transition-colors cursor-pointer" title="複製">
+            <button data-action="duplicateRecord" data-id="${item.id}" aria-label="複製" class="text-slate-300 hover:text-primary focus:outline-none focus:ring-2 focus:ring-primary/30 rounded p-1.5 sm:p-2 -m-1 transition-colors cursor-pointer" title="複製">
               <svg class="w-4 h-4 pointer-events-none"><use href="#icon-copy"></use></svg>
             </button>
             <button data-action="deleteRecord" data-id="${item.id}" aria-label="削除" class="text-slate-300 hover:text-red-500 focus:outline-none focus:ring-2 focus:ring-red-200 rounded transition-colors text-xl sm:text-2xl leading-none p-1.5 sm:p-2 -m-1 cursor-pointer" title="削除">&times;</button>
@@ -2688,18 +2688,18 @@ function updateOrCreateBlockElement(block, existingEl = null) {
     : null;
 
   blockEl.innerHTML = `
-    <button data-action="saveTemplate" data-block-id="${block.id}" class="absolute -top-3 -left-3 opacity-100 md:opacity-0 group-hover/block:opacity-100 bg-white border border-slate-200 text-slate-400 hover:text-blue-600 hover:border-blue-600/50 hover:shadow-[0_0_15px_rgba(37,99,235,0.3)] hover:scale-110 p-2 rounded-xl transition-all duration-300 cursor-pointer flex items-center justify-center z-10" title="このブロックをテンプレートとして保存">
+    <button data-action="saveTemplate" data-block-id="${block.id}" class="absolute -top-3 -left-3 opacity-100 md:opacity-0 group-hover/block:opacity-100 bg-white border border-slate-200 text-slate-400 hover:text-primary hover:border-primary/50 hover:shadow-[0_0_15px_rgba(37,99,235,0.3)] hover:scale-110 p-2 rounded-xl transition-all duration-300 cursor-pointer flex items-center justify-center z-10" title="このブロックをテンプレートとして保存">
       <svg class="w-5 h-5"><use href="#icon-squares-plus"></use></svg>
     </button>
     <div class="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden transition-all hover:border-slate-300 hover:shadow-md">
     <div data-action="toggleBlock" data-block-id="${block.id}" class="bg-slate-50/50 px-8 py-5 border-b border-slate-100 flex justify-between items-center transition-colors cursor-pointer select-none group/header hover:bg-slate-100">
       <div class="flex items-center gap-3 overflow-hidden">
         <svg id="block-icon-${block.id}" class="w-5 h-5 text-slate-400 transition-transform duration-200" style="transform: ${iconRotation};"><use href="#icon-chevron-down"></use></svg>
-        <h2 data-id="${block.id}" data-field="memo" contenteditable="true"      class="select-text text-xl font-extrabold text-blue-950 tracking-tight outline-none focus:bg-white focus:ring-2 focus:ring-blue-600/30 px-1 rounded cursor-text truncate transition-colors empty:inline-block empty:min-w-20 empty:bg-slate-100 empty:before:content-['✎_タイトル未入力'] empty:before:text-slate-400 empty:before:text-sm empty:before:font-normal empty:before:pointer-events-none empty:focus:before:opacity-50">${escapeHtml(block.memo)}</h2>
+        <h2 data-id="${block.id}" data-field="memo" contenteditable="true"      class="select-text text-xl font-extrabold text-slate-900 tracking-tight outline-none focus:bg-white focus:ring-2 focus:ring-primary/30 px-1 rounded cursor-text truncate transition-colors empty:inline-block empty:min-w-20 empty:bg-slate-100 empty:before:content-['✎_タイトル未入力'] empty:before:text-slate-400 empty:before:text-sm empty:before:font-normal empty:before:pointer-events-none empty:focus:before:opacity-50">${escapeHtml(block.memo)}</h2>
         ${blockBadgeHtml}
       </div>
       <div class="flex items-center shrink-0">
-        <div class="font-bold tabular-nums tracking-tight text-blue-950 text-lg"><span id="block-total-${block.id}">${jpyFormatter.format(blockTotal)}</span> <span class="text-slate-400 text-sm font-sans">円</span></div>
+        <div class="font-bold tabular-nums tracking-tight text-slate-900 text-lg"><span id="block-total-${block.id}">${jpyFormatter.format(blockTotal)}</span> <span class="text-slate-400 text-sm font-sans">円</span></div>
         <div class="flex items-center pl-4 border-l border-slate-200/50 ml-4 shrink-0 h-8">
           <button data-action="sortBlockByDate" data-block-id="${block.id}" aria-label="日付順に並べ替え" class="w-8 h-8 flex items-center justify-center rounded text-slate-300 hover:bg-slate-100 hover:text-slate-600 md:opacity-0 md:group-hover/block:opacity-100 focus:opacity-100 focus:outline-none focus:ring-2 focus:ring-slate-200 transition-all cursor-pointer mr-1 ${block.children.length < 2 ? 'opacity-30 pointer-events-none md:!opacity-30' : ''}" title="日付の古い順に並べ替える">
             <svg class="w-5 h-5"><use href="#icon-sort"></use></svg>
@@ -2714,10 +2714,10 @@ function updateOrCreateBlockElement(block, existingEl = null) {
       <div class="">${itemsHtml}</div>
       <div class="px-8 py-4 bg-white transition-colors">
       <form id="block-form-${block.id}" class="block-form flex flex-wrap sm:flex-nowrap items-center gap-2 sm:gap-3 px-3 py-2 -mx-3 rounded-md transition-all focus-within:bg-slate-50 focus-within:ring-1 focus-within:ring-slate-200" data-block-id="${block.id}">
-        <span class="text-blue-600 text-xl leading-none font-light hidden sm:inline">+</span>
+        <span class="text-primary text-xl leading-none font-light hidden sm:inline">+</span>
 
         <div class="flex items-center gap-2 sm:gap-3 w-full sm:w-auto">
-          <button type="submit" aria-label="明細を追加" class="text-blue-600 bg-blue-600/10 hover:bg-blue-600/20 rounded-full w-8 h-8 flex items-center justify-center text-xl leading-none font-light sm:hidden transition-colors outline-none focus:ring-2 focus:ring-blue-600/50 shrink-0">+</button>
+          <button type="submit" aria-label="明細を追加" class="text-primary bg-primary/10 hover:bg-primary/20 rounded-full w-8 h-8 flex items-center justify-center text-xl leading-none font-light sm:hidden transition-colors outline-none focus:ring-2 focus:ring-primary/50 shrink-0">+</button>
           <div class="flex items-center bg-slate-50 rounded-md px-1 py-1 border border-slate-200 transition-colors">
             <button type="button" data-action="adjustDate" data-delta="-1" aria-label="1日戻す" class="text-slate-400 hover:text-slate-800 w-8 h-8 flex items-center justify-center font-bold cursor-pointer outline-none transition-colors touch-manipulation" title="-1日">-</button>
             <input type="date" aria-label="追加する明細の日付" class="${dateInputClass}" value="${defaultDate}">
@@ -2727,8 +2727,8 @@ function updateOrCreateBlockElement(block, existingEl = null) {
         </div>
 
         <div class="flex items-center gap-2 sm:gap-3 w-full sm:w-auto sm:flex-1 pl-6 sm:pl-0 mt-2 sm:mt-0">
-          <input type="text" aria-label="追加する明細のメモ" placeholder="明細を追加..." list="memo-suggestions"     class="item-memo bg-transparent border-0 focus:ring-0 p-0 text-blue-950 placeholder-slate-400 flex-1 text-sm font-medium outline-none min-w-[100px]">
-          <input type="text" aria-label="追加する明細の金額（数式可）" inputmode="decimal" placeholder="金額(数式OK)" class="item-amount bg-transparent border-0 focus:ring-0 p-0 text-right tabular-nums tracking-tight text-blue-950 placeholder-slate-400 w-24 sm:w-32 shrink-0 text-sm outline-none" style="min-width: 104px;"    title="数式計算（+ - * /）が使えます">
+          <input type="text" aria-label="追加する明細のメモ" placeholder="明細を追加..." list="memo-suggestions"     class="item-memo bg-transparent border-0 focus:ring-0 p-0 text-slate-900 placeholder-slate-400 flex-1 text-sm font-medium outline-none min-w-[100px]">
+          <input type="text" aria-label="追加する明細の金額（数式可）" inputmode="decimal" placeholder="金額(数式OK)" class="item-amount bg-transparent border-0 focus:ring-0 p-0 text-right tabular-nums tracking-tight text-slate-900 placeholder-slate-400 w-24 sm:w-32 shrink-0 text-sm outline-none" style="min-width: 104px;"    title="数式計算（+ - * /）が使えます">
         </div>
         <button type="submit" class="hidden">追加</button>
       </form>
@@ -4053,7 +4053,7 @@ function renderCSVPreview() {
     let badgeClass = 'bg-slate-200 text-slate-500';
     if (i === mapDate) {
       label = '日付';
-      badgeClass = 'bg-blue-100 text-blue-700';
+      badgeClass = 'bg-primary-100 text-blue-700';
     } else if (i === mapAccount) {
       label = '科目';
       badgeClass = 'bg-purple-100 text-purple-700';
@@ -4090,7 +4090,7 @@ function renderCSVPreview() {
       // マッピングされている列はハイライト
       let highlightClass = '';
       if (i === mapDate || i === mapAccount || i === mapMemo || i === mapAmount) {
-        highlightClass = 'text-blue-950 font-medium bg-slate-50/50';
+        highlightClass = 'text-slate-900 font-medium bg-slate-50/50';
       }
 
       tdHtml += `<td class="px-3 py-2 truncate max-w-[150px] ${highlightClass}" title="${escapeHtml(val)}">${escapeHtml(displayVal)}</td>`;
@@ -4718,12 +4718,12 @@ function renderCommandList(query = '') {
   filtered.forEach((cmd, i) => {
     const div = document.createElement('div');
     const isSelected = i === selectedCommandIndex;
-    div.className = `px-4 py-3 my-1 flex justify-between items-center rounded-md cursor-pointer transition-colors ${isSelected ? 'bg-blue-50 text-blue-600' : 'text-slate-600 hover:bg-slate-100 hover:text-blue-950'}`;
+    div.className = `px-4 py-3 my-1 flex justify-between items-center rounded-md cursor-pointer transition-colors ${isSelected ? 'bg-primary-50 text-primary' : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'}`;
 
     let innerHtml = `<div class="flex items-center gap-3"><span class="text-xl">${cmd.icon}</span><span class="font-medium tracking-wide">${cmd.title}</span></div>`;
     if (cmd.shortcut) {
       // コマンドが選択されている時はバッジの色も少し強調する
-      innerHtml += `<kbd class="font-mono text-[10px] bg-white border border-slate-200 px-1.5 py-0.5 rounded shadow-sm ${isSelected ? 'text-blue-600 border-blue-600/20' : 'text-slate-400'}">${cmd.shortcut}</kbd>`;
+      innerHtml += `<kbd class="font-mono text-[10px] bg-white border border-slate-200 px-1.5 py-0.5 rounded shadow-sm ${isSelected ? 'text-primary border-primary/20' : 'text-slate-400'}">${cmd.shortcut}</kbd>`;
     }
     div.innerHTML = innerHtml;
 
