@@ -6,6 +6,116 @@ function getTodayString() {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 
+// Settlement tags: exact tags only (#支払 ≠ #支払い). Fullwidth ＃ is accepted.
+// TAG_SEPARATORS is shared by the JS regexes and the SQL GLOB so both judge the same rows.
+const TAG_SEPARATORS = ' \t\n\r　,、。.・()（）「」#＃';
+const TAG_BOUNDARY = `(?=$|[${TAG_SEPARATORS}])`;
+const SETTLEMENT_TAG_RE = new RegExp(`[#＃](入金|支払|決済)${TAG_BOUNDARY}`);
+const SETTLEMENT_TAG_RE_G = new RegExp(`[#＃](入金|支払|決済)${TAG_BOUNDARY}`, 'g');
+const SETTLEMENT_TAG_EXACT_RE = /^#(入金|支払|決済)$/;
+const MINUS_LIKE_RE = /[ー−△▲－‐‑–—\uFF0D]/g;
+const DRAFT_DEBOUNCE_MS = 10000;
+const DRAFT_MAX_INTERVAL_MS = 30000;
+
+function isSettlementMemo(memo) {
+  return SETTLEMENT_TAG_RE.test(memo || '');
+}
+
+function hasExactTag(memo, name) {
+  return new RegExp(`[#＃]${name}${TAG_BOUNDARY}`).test(memo || '');
+}
+
+function stripSettlementTags(memo) {
+  return (memo || '')
+    .replace(SETTLEMENT_TAG_RE_G, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+// SQLite GLOB: settlement tag at end, or followed by a separator (not a longer word)
+function settlementExclusionSql(columnExpr) {
+  const m = `REPLACE(${columnExpr}, '＃', '#')`;
+  const seps = TAG_SEPARATORS;
+  const tags = ['入金', '支払', '決済'];
+  const parts = [];
+  for (const tag of tags) {
+    parts.push(`${m} GLOB '*#${tag}'`);
+    parts.push(`${m} GLOB '*#${tag}[${seps}]*'`);
+  }
+  return `NOT (${parts.join(' OR ')})`;
+}
+
+function hasRecordsTable(database) {
+  try {
+    const check = database.exec(
+      "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'records'",
+    );
+    return check.length > 0;
+  } catch (e) {
+    return false;
+  }
+}
+
+function roundAwayFromZero(value) {
+  if (!isFinite(value) || isNaN(value)) return null;
+  const rounded = Math.sign(value) * Math.round(Math.abs(value));
+  return Object.is(rounded, -0) || rounded === 0 ? 0 : rounded;
+}
+
+function normalizeGroupedNumber(match) {
+  const lastComma = match.lastIndexOf(',');
+  const lastDot = match.lastIndexOf('.');
+  if (lastComma > lastDot && lastDot !== -1) return match.replace(/\./g, '').replace(/,/g, '.');
+  if (lastDot > lastComma && lastComma !== -1) return match.replace(/,/g, '');
+  if (lastComma !== -1) {
+    if (/,\d{3}$/.test(match)) return match.replace(/,/g, '');
+    return match.replace(/,/g, '.');
+  }
+  if ((match.match(/\./g) || []).length > 1) return null;
+  return match;
+}
+
+function normalizeAmountText(raw) {
+  let normalized = String(raw).trim();
+  // Map minus-like glyphs before fullwidth digit conversion (U+FF0D must not go through -0xFEE0)
+  normalized = normalized.replace(MINUS_LIKE_RE, '-');
+  normalized = normalized.replace(/[０-９＋＊／．（）]/g, (s) =>
+    String.fromCharCode(s.charCodeAt(0) - 0xfee0),
+  );
+  normalized = normalized.replace(/×/g, '*').replace(/÷/g, '/');
+
+  let invalidGroup = false;
+  normalized = normalized.replace(/(?:\d+[.,])+\d+/g, (match) => {
+    const fixed = normalizeGroupedNumber(match);
+    if (fixed === null) {
+      invalidGroup = true;
+      return match;
+    }
+    return fixed;
+  });
+  if (invalidGroup) return null;
+
+  // Strip currency / whitespace before sign detection so "(¥1,500)" stays negative
+  normalized = normalized.replace(/[¥￥$円\s]/g, '');
+  if (/^\([\d,.]+\)$/.test(normalized)) {
+    normalized = '-' + normalized.replace(/[()]/g, '');
+  }
+  if (normalized.endsWith('-') && !normalized.startsWith('-')) {
+    normalized = '-' + normalized.slice(0, -1);
+  }
+  return normalized;
+}
+
+function clearMigratedLocalStorageIfPresent() {
+  const keysToMigrate = ['customAccountDict', 'fiscalMonth', 'accountDict'];
+  for (const key of keysToMigrate) {
+    if (localStorage.getItem(key) === null) continue;
+    if (getDbSetting(key) !== null) {
+      localStorage.removeItem(key);
+    }
+  }
+}
+
 let SQL = null; // sql.js module
 let fileHandle = null; // File System Access API file handle
 let isDirty = false; // Unsaved changes flag
@@ -16,8 +126,10 @@ let pendingCSVBuffer = null; // CSV binary data
 let currentDisplayedTotal = 0; // For count up animation
 let collapsedBlocks = new Set(); // Set of collapsed block IDs
 let totalAnimationId = null; // Prevent duplicate animations
-let draftTimer = null; // Auto-save draft timer
-let draftGeneration = 0; // 下書き保存の世代番号（古い保存による巻き戻り防止）
+let draftTimer = null; // Debounced draft save timer
+let draftMaxTimer = null; // Max-interval draft save timer
+let draftGeneration = 0; // Draft generation (prevent stale overwrite)
+let draftSaveInFlight = null; // Promise for the current draft save
 let statusTimeoutId = null; // Status bar notification timer
 let isSaving = false; // Prevent concurrent saves flag
 let lastSavedPasswordHash = ''; // Track password changes via hash
@@ -89,7 +201,41 @@ function openDB() {
   });
 }
 
+// Multi-tab guard: only the primary tab may read, write or delete the shared draft
+let isSecondaryTab = false;
+
+function markSecondaryTab() {
+  if (isSecondaryTab) return;
+  isSecondaryTab = true;
+  alert(
+    '⚠️ GrindMoneyは既に別のタブまたはウィンドウで開かれています。\n\nデータ競合（バックアップの巻き戻り）を防ぐため、このタブでは編集できません。\n元のタブを閉じてから再読み込みしてください。',
+  );
+  document.body.style.opacity = '0.5';
+  document.body.style.pointerEvents = 'none';
+}
+
+// Web Locks gives an atomic "first tab wins"; the lock is held until the tab closes.
+// Returns null when the API is unavailable (BroadcastChannel fallback decides instead).
+function acquirePrimaryTabLock() {
+  if (!navigator.locks || typeof navigator.locks.request !== 'function') {
+    return Promise.resolve(null);
+  }
+  return new Promise((resolve) => {
+    navigator.locks
+      .request('grindmoney_primary_tab', { ifAvailable: true }, (lock) => {
+        if (!lock) {
+          resolve(false);
+          return undefined;
+        }
+        resolve(true);
+        return new Promise(() => {});
+      })
+      .catch(() => resolve(null));
+  });
+}
+
 async function saveDraft(uints) {
+  if (isSecondaryTab) return;
   try {
     const idb = await openDB();
     const tx = idb.transaction(STORE_NAME, 'readwrite');
@@ -105,6 +251,7 @@ async function saveDraft(uints) {
 }
 
 async function loadDraft() {
+  if (isSecondaryTab) return null;
   try {
     const idb = await openDB();
     const tx = idb.transaction(STORE_NAME, 'readonly');
@@ -119,6 +266,7 @@ async function loadDraft() {
 }
 
 async function clearDraft() {
+  if (isSecondaryTab) return;
   try {
     const idb = await openDB();
     const tx = idb.transaction(STORE_NAME, 'readwrite');
@@ -128,46 +276,86 @@ async function clearDraft() {
   }
 }
 
-// 未保存状態（isDirty）のセットとUIバッジの更新
-function setDirty(state) {
-  // 自動バックアップの実行 (10秒デバウンス: 入力が落ち着いたタイミングで実行)
-  // ⚠️ タイマーのリセット処理は state の変化に関わらず毎回実行させる
-  if (state && db) {
-    if (draftTimer) clearTimeout(draftTimer);
-    draftTimer = setTimeout(async () => {
-        const generation = ++draftGeneration;
-        try {
-          if (!isDirty) return; // Cancel if no longer dirty at timer execution
+async function persistDraftSnapshot() {
+  if (!isDirty || !db) return;
+  const generation = ++draftGeneration;
+  try {
+    if (lastSavedPasswordHash !== '' && currentMasterKey === null) {
+      console.warn('Draft save aborted: Password removed from an encrypted session.');
+      return;
+    }
+    let data = db.export();
+    if (currentMasterKey) {
+      data = await encryptData(data, currentMasterKey);
+    }
+    if (!isDirty) return;
+    if (generation !== draftGeneration) return;
+    await saveDraft(data);
+  } catch (e) {
+    console.error('Draft save failed', e);
+  }
+}
 
-          // Prevent data leak: If it was previously encrypted but password is now empty, abort draft save
-          if (lastSavedPasswordHash !== '' && currentMasterKey === null) {
-            console.warn('Draft save aborted: Password removed from an encrypted session.');
-            return;
-          }
-          let data = db.export();
-          if (currentMasterKey) {
-            data = await encryptData(data, currentMasterKey);
-          }
+function clearDraftTimers() {
+  if (draftTimer) {
+    clearTimeout(draftTimer);
+    draftTimer = null;
+  }
+  if (draftMaxTimer) {
+    clearTimeout(draftMaxTimer);
+    draftMaxTimer = null;
+  }
+}
 
-          if (!isDirty) return; // Discard if manually saved during async execution
-          if (generation !== draftGeneration) return; // より新しい下書き保存が開始済み
-
-          await saveDraft(data);
-        } catch (e) {
-          console.error('Draft save failed', e);
-        } finally {
-          draftTimer = null; // 保存完了後にタイマーを解放
-        }
-      }, 10000);
-  } else if (!state) {
+function armDraftMaxTimer() {
+  if (draftMaxTimer || !isDirty) return;
+  draftMaxTimer = setTimeout(() => {
+    draftMaxTimer = null;
     if (draftTimer) {
       clearTimeout(draftTimer);
       draftTimer = null;
     }
+    void runScheduledDraftSave();
+  }, DRAFT_MAX_INTERVAL_MS);
+}
+
+async function runScheduledDraftSave() {
+  if (draftMaxTimer) {
+    clearTimeout(draftMaxTimer);
+    draftMaxTimer = null;
+  }
+  draftSaveInFlight = persistDraftSnapshot().finally(() => {
+    draftSaveInFlight = null;
+  });
+  await draftSaveInFlight;
+}
+
+function scheduleDraftSave() {
+  if (!db) return;
+  if (draftTimer) clearTimeout(draftTimer);
+  draftTimer = setTimeout(() => {
+    draftTimer = null;
+    void runScheduledDraftSave();
+  }, DRAFT_DEBOUNCE_MS);
+  armDraftMaxTimer();
+}
+
+async function flushDraftNow() {
+  clearDraftTimers();
+  if (!isDirty || !db) return;
+  if (draftSaveInFlight) await draftSaveInFlight;
+  await persistDraftSnapshot();
+}
+
+// Unsaved-state flag + UI badge + draft autosave scheduling
+function setDirty(state) {
+  if (state && db) {
+    scheduleDraftSave();
+  } else if (!state) {
+    clearDraftTimers();
     clearDraft();
   }
 
-  // 🌟 DOM Thrashing 防止: 状態が変化していない場合はDOM操作をスキップする (Early Return)
   if (isDirty === state) return;
 
   isDirty = state;
@@ -446,7 +634,8 @@ function migrateDatabase() {
       );
     `);
 
-    // 🎯 Gold-Rank: 既存のlocalStorageからSQLiteへのシームレスな移行
+    // Migrate legacy localStorage settings into SQLite.
+    // Do not remove localStorage until a successful file save (see clearMigratedLocalStorageIfPresent).
     try {
       const keysToMigrate = ['customAccountDict', 'fiscalMonth', 'accountDict'];
       let checkStmt, insertStmt;
@@ -462,9 +651,8 @@ function migrateDatabase() {
             checkStmt.reset();
 
             if (!exists) {
+              // No setDirty: localStorage keeps the value until a save, so nothing is lost
               insertStmt.run([key, oldVal]);
-              localStorage.removeItem(key); // 吸い上げ完了後、古いデータを消去
-              setDirty(true);
             }
           }
         }
@@ -484,33 +672,35 @@ function migrateDatabase() {
 async function initSQLite() {
   try {
     if (typeof initSqlJs === 'undefined') {
-      throw new Error('sql.js が読み込まれていません。通信環境またはCDNの障害が疑われます。');
+      throw new Error('sql.js が読み込まれていません。assets/sql-wasm.js の配置を確認してください。');
     }
 
     const wasmUrl = './assets/sql-wasm.wasm';
-    
+    const isFileProtocol = location.protocol === 'file:';
+
     let wasmBinaryData = null;
-    // 【エンタープライズ・ロックダウン対策】事前にWasmが実行可能か検証する
     try {
       const response = await fetch(wasmUrl);
+      if (!response.ok) throw new Error(`WASM_FETCH_${response.status}`);
       wasmBinaryData = await response.arrayBuffer();
-      const isWasmSupported = await WebAssembly.validate(new Uint8Array(wasmBinaryData));
+      const isWasmSupported = WebAssembly.validate(new Uint8Array(wasmBinaryData));
       if (!isWasmSupported) throw new Error('WASM_INVALID');
     } catch (e) {
+      const reason = isFileProtocol
+        ? 'file:// では WebAssembly を読み込めません。HTTPS または localhost で開いてください。'
+        : e && String(e.message || e).startsWith('WASM_FETCH_')
+          ? '同梱の sql-wasm.wasm が見つかりません。assets フォルダの配置を確認してください。'
+          : 'このブラウザ環境では WebAssembly がブロックされている可能性があります（企業ポリシーや Lockdown Mode など）。';
       document.body.innerHTML = `
         <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;background-color:#f8fafc;color:#0f172a;font-family:sans-serif;padding:2rem;text-align:center;">
-          <h1 style="color:#ef4444;margin-bottom:1rem;font-size:2rem;">⚠️ Fatal System Error</h1>
-          <p style="font-size:1.1rem;margin-bottom:0.5rem;max-width:600px;">
-            Your browser environment explicitly blocks WebAssembly execution.<br>
-            This usually happens due to enterprise security policies, VPNs, or strict features like iOS "Lockdown Mode".
-          </p>
+          <h1 style="color:#ef4444;margin-bottom:1rem;font-size:2rem;">起動に失敗しました</h1>
+          <p style="font-size:1.1rem;margin-bottom:0.5rem;max-width:600px;">${reason}</p>
           <p style="color:#64748b;font-size:0.95rem;max-width:500px;margin-top:1.5rem;">
-            GrindMoney requires WebAssembly to run the local SQLite database securely in your browser. 
-            Please disable Lockdown Mode or use a standard browser environment.
+            GrindMoney はブラウザ内の SQLite (WebAssembly) で動作します。HTTPS または localhost で配信してください。
           </p>
         </div>
       `;
-      throw new Error('WebAssembly execution is blocked by the environment (e.g. iOS Lockdown Mode). App aborted.');
+      throw new Error('WebAssembly bootstrap failed: ' + reason);
     }
 
     const config = {
@@ -519,14 +709,15 @@ async function initSQLite() {
     SQL = await initSqlJs(config);
 
     let initialData = null;
+    // Decide the tab role before touching the draft, so a second tab never restores or deletes it
+    if ((await acquirePrimaryTabLock()) === false) markSecondaryTab();
     const draft = await loadDraft();
     if (draft) {
       if (
         confirm(
-          '⚠️ 前回終了時の未保存データ（バックアップ）が見つかりました。\n\n復元しますか？\n（「キャンセル」を押すとバックアップは破棄されます）',
+          '⚠️ 前回終了時の未保存データ（バックアップ）が見つかりました。\n\n復元しますか？\n（「キャンセル」を押すと次の確認で破棄できます）',
         )
       ) {
-        initialData = draft;
         let Uints = draft;
         const magic = Uints.slice(0, 8);
         const magicStr = new TextDecoder().decode(magic);
@@ -551,7 +742,7 @@ async function initSQLite() {
                 alert('起動をキャンセルしました。リロードしてやり直してください。');
                 document.body.innerHTML =
                   "<h1 style='text-align:center; margin-top:20vh;'>保護のため停止しました。<br>リロードしてください。</h1>";
-                return; // throw new Error(...) をやめて静かに停止する
+                return;
               }
               await setMasterPassword(promptPw);
               keyMaterial = currentMasterKey;
@@ -559,24 +750,33 @@ async function initSQLite() {
           }
         }
         initialData = Uints;
-      } else {
+      } else if (
+        confirm('バックアップを破棄しますか？\nこの操作は取り消せません。')
+      ) {
         await clearDraft();
+      } else {
+        alert(
+          'バックアップを残したまま起動します。\n次回起動時に再度確認します。\n※ このまま編集すると、新しい内容でバックアップが上書きされます。',
+        );
       }
     }
 
     if (initialData) {
       try {
         db = new SQL.Database(initialData);
+        if (!hasRecordsTable(db)) throw new Error('records table not found');
         migrateDatabase();
         setDirty(true);
 
         showToast('未保存データを復元しました', '<span class="text-orange-400">↺</span>');
       } catch (dbError) {
-        // バックアップデータが破損している場合のセーフティーネット
         console.error('ドラフトの復元に失敗しました。データが破損しています。', dbError);
         alert('⚠️ 前回の未保存データが破損しているため、復元を中止しました。');
+        try {
+          if (db) db.close();
+        } catch (e) {}
         await clearDraft();
-        db = new SQL.Database(); // 空のDBで再スタート
+        db = new SQL.Database();
         db.run(`
           CREATE TABLE IF NOT EXISTS records (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -711,48 +911,24 @@ function addBlock() {
   renderData(newId);
 }
 
-// スマート入力用の数式評価 (例: "1500 / 3" -> 500)
+// Smart amount / formula evaluation (e.g. "1500 / 3" -> 500)
 function evaluateMath(expr) {
   if (expr === null || expr === '') return null;
 
-  // 異常に長い入力によるフリーズを防止
   if (String(expr).length > 50) return null;
 
   try {
     const trimmedExpr = String(expr).trim();
-    // 全角数字・記号を半角に変換する
-    let normalized = trimmedExpr.replace(/[０-９＋－＊／．（）]/g, function (s) {
-      return String.fromCharCode(s.charCodeAt(0) - 0xfee0);
-    });
-    // 全角の「×」「÷」「ー」などを半角記号にマッピング
-    normalized = normalized
-      .replace(/×/g, '*')
-      .replace(/÷/g, '/')
-      .replace(/[ー−△]/g, '-');
+    // Accidental date paste into amount field
+    if (/^\d{4}[-\/]\d{1,2}[-\/]\d{1,2}$/.test(trimmedExpr)) return null;
 
-    normalized = normalized.replace(/(?:\d+[.,])+\d+/g, (match) => {
-      const lastComma = match.lastIndexOf(',');
-      const lastDot = match.lastIndexOf('.');
-      if (lastComma > lastDot && lastDot !== -1) return match.replace(/\./g, '').replace(/,/g, '.');
-      else if (lastDot > lastComma && lastComma !== -1) return match.replace(/,/g, '');
-      else if (lastComma !== -1) {
-        if (/,\d{3}$/.test(match)) return match.replace(/,/g, '');
-        else return match.replace(/,/g, '.');
-      } else {
-        if (match.match(/\./g) && match.match(/\./g).length > 1) return match.replace(/\./g, '');
-        return match;
-      }
-    });
+    let normalized = normalizeAmountText(trimmedExpr);
+    if (normalized === null) return null;
 
-    if (/^\([\d,.]+\)$/.test(normalized)) {
-      normalized = '-' + normalized.replace(/[()]/g, '');
-    }
-    if (normalized.endsWith('-') && !normalized.startsWith('-')) {
-      normalized = '-' + normalized.slice(0, -1);
-    }
-
-    // 数字と四則演算記号以外を除去して安全化
-    const sanitized = normalized.replace(/[^0-9+\-*/().]/g, '');
+    // Strip only currency / whitespace; reject other junk instead of silently joining digits
+    const withoutCurrency = normalized.replace(/[¥￥$円\s,]/g, '');
+    if (/[^0-9+\-*/().]/.test(withoutCurrency)) return null;
+    const sanitized = withoutCurrency;
     if (!sanitized) return null;
     if (sanitized.includes('**')) return null;
 
@@ -834,8 +1010,8 @@ function evaluateMath(expr) {
     if (evalStack.length !== 1) return null;
     const result = evalStack[0];
 
-    if (!isFinite(result) || isNaN(result)) return null;
-    const rounded = Math.round(result + Number.EPSILON);
+    const rounded = roundAwayFromZero(result);
+    if (rounded === null) return null;
     if (rounded > 10000000000000 || rounded < -10000000000000) return null;
     return rounded;
   } catch (e) {
@@ -864,6 +1040,13 @@ function addItem(parentId, memo, amount, dateStr, accountStr) {
 
   // フィルター外の日付を追加した場合、自動で「すべての期間」に表示を戻す
   showAllPeriodsIfOutsideFilter(dateStr);
+
+  // The re-render keeps in-progress form values, so clear the submitted ones first
+  const submittedForm = document.getElementById(`block-form-${parentId}`);
+  if (submittedForm) {
+    submittedForm.querySelector('.item-memo').value = '';
+    submittedForm.querySelector('.item-amount').value = '';
+  }
 
   renderData(parentId);
 }
@@ -924,16 +1107,11 @@ function insertRecord(parentId, memo, amountExpr, dateStr = null, accountStr = n
   }
   const newSortOrder = maxSort + 1;
 
-  let query =
-    'INSERT INTO records (parent_id, memo, amount, account, sort_order) VALUES (?, ?, ?, ?, ?)';
-  let params = [parentId, memo, parsedAmount, accountStr, newSortOrder];
-
-  if (dateStr) {
-    // タイムゾーンによるバグを回避するため、入力された日付を文字列のまま保存する
-    query =
-      'INSERT INTO records (parent_id, memo, amount, account, sort_order, created_at) VALUES (?, ?, ?, ?, ?, ?)';
-    params.push(dateStr + ' 00:00:00');
-  }
+  // Always set created_at explicitly (never rely on CURRENT_TIMESTAMP / UTC)
+  const safeDate = dateStr && String(dateStr).trim() ? String(dateStr).trim() : getTodayString();
+  const query =
+    'INSERT INTO records (parent_id, memo, amount, account, sort_order, created_at) VALUES (?, ?, ?, ?, ?, ?)';
+  const params = [parentId, memo, parsedAmount, accountStr, newSortOrder, safeDate + ' 00:00:00'];
 
   let stmt;
   try {
@@ -1025,12 +1203,20 @@ window.createCollectionRecord = function (id) {
 
       // 💡 修正1: 科目コードから収入か支出(経費)かをスマート判定（エクスポートと同じ判定）
       const isIncome = isIncomeEntry(amount, account);
+      const accountName = account || '雑費';
+      if (
+        !getFreewayCode(accountName) &&
+        !confirm(
+          `⚠️ 科目「${accountName}」は科目コード表にないため、収支の向きを判定できません。\n\n金額の符号から「${isIncome ? '入金（回収）' : '支払'}」として決済行を作成します。よろしいですか？`,
+        )
+      ) {
+        return;
+      }
 
       const tag = isIncome ? '#入金' : '#支払';
       const newAccount = '普通預金'; // 回収・支払のデフォルト科目
 
-      // 元のメモから既存の #入金 や #支払 を除去してから、新しいタグを付与する
-      const cleanMemo = memo ? memo.replace(/#入金|#支払|#決済/g, '').trim() : '';
+      const cleanMemo = stripSettlementTags(memo);
       const newMemo = `${cleanMemo} (決済) ${tag}`;
 
       // 💡 修正3: ブロック内の最大 sort_order を取得して順番を壊さないようにする
@@ -1366,15 +1552,11 @@ function updateRecord(id, field, newValue, element) {
   }
 }
 
-// 金額編集時に画面全体を再描画せず、合計金額のみを更新する
-function updateTotalsOnly() {
-  if (!db) return;
-
-  // 期間フィルターの状態を取得してクエリに反映させる
+// Current period filter as a parameterized SQL fragment (" AND (...)") shared by totals and exports
+function getPeriodWhereClause() {
   const filterVal = document.getElementById('period-filter')?.value || 'all';
+  const params = [];
   let whereClause = '';
-  let params = [];
-
   if (window.currentActiveMonths) {
     const orConditions = window.currentActiveMonths
       .map((m) => {
@@ -1387,6 +1569,14 @@ function updateTotalsOnly() {
     whereClause = ` AND created_at LIKE ?`;
     params.push(`${filterVal}%`);
   }
+  return { whereClause, params };
+}
+
+// 金額編集時に画面全体を再描画せず、合計金額のみを更新する
+function updateTotalsOnly() {
+  if (!db) return;
+
+  const { whereClause, params } = getPeriodWhereClause();
 
   let stmtTotal;
   let stmtBlock;
@@ -1394,7 +1584,7 @@ function updateTotalsOnly() {
     // 1. 総合計を更新
     let grandTotal = 0;
     stmtTotal = db.prepare(
-      `SELECT SUM(amount) FROM records WHERE parent_id IS NOT NULL AND COALESCE(memo, '') NOT LIKE '%#入金%' AND COALESCE(memo, '') NOT LIKE '%#支払%' AND COALESCE(memo, '') NOT LIKE '%#決済%'${whereClause}`,
+      `SELECT SUM(amount) FROM records WHERE parent_id IS NOT NULL AND ${settlementExclusionSql("COALESCE(memo, '')")}${whereClause}`,
     );
     stmtTotal.bind(params);
     if (stmtTotal.step()) {
@@ -1404,7 +1594,7 @@ function updateTotalsOnly() {
 
     // 2. 各ブロックの合計を更新
     stmtBlock = db.prepare(
-      `SELECT SUM(amount) FROM records WHERE parent_id = ? AND COALESCE(memo, '') NOT LIKE '%#入金%' AND COALESCE(memo, '') NOT LIKE '%#支払%' AND COALESCE(memo, '') NOT LIKE '%#決済%'${whereClause}`,
+      `SELECT SUM(amount) FROM records WHERE parent_id = ? AND ${settlementExclusionSql("COALESCE(memo, '')")}${whereClause}`,
     );
     const blocksRes = db.exec('SELECT id FROM records WHERE parent_id IS NULL');
     if (blocksRes.length > 0) {
@@ -1679,13 +1869,19 @@ function setActiveQuickPeriodButton(btn, keepYear = false) {
     if (activeClasses) {
       b.classList.remove(...activeClasses.split(' ').filter(Boolean));
     }
+    b.setAttribute('aria-pressed', 'false');
   });
   if (btn) {
     const activeClasses = btn.getAttribute('data-active-classes');
     if (activeClasses) {
       btn.classList.add(...activeClasses.split(' ').filter(Boolean));
     }
+    btn.setAttribute('aria-pressed', 'true');
   }
+}
+
+function isQuickPeriodButtonActive(id) {
+  return document.getElementById(id)?.getAttribute('aria-pressed') === 'true';
 }
 
 // 単一期間（2025-04 など）のセット
@@ -1706,12 +1902,8 @@ function setMultiMonthFilter(monthArray, btn = null) {
   const currentFilter = select ? select.value : 'all';
 
   // 🎯 今年度・前年度がアクティブかどうかを判定する
-  const isFiscalYearActive = document
-    .getElementById('fiscal-year-btn')
-    ?.classList.contains('!bg-purple-600');
-  const isPrevFiscalYearActive = document
-    .getElementById('prev-fiscal-year-btn')
-    ?.classList.contains('!bg-purple-600');
+  const isFiscalYearActive = isQuickPeriodButtonActive('fiscal-year-btn');
+  const isPrevFiscalYearActive = isQuickPeriodButtonActive('prev-fiscal-year-btn');
   const startMonth = parseInt(getDbSetting('fiscalMonth', '4'), 10);
   let targetMonths = [];
 
@@ -1787,12 +1979,8 @@ function changeFiscalMonth() {
       setDbSetting('fiscalMonth', month.toString());
       updateFiscalYearButton();
 
-      const isFiscalYearActive = document
-        .getElementById('fiscal-year-btn')
-        ?.classList.contains('!bg-purple-600');
-      const isPrevFiscalYearActive = document
-        .getElementById('prev-fiscal-year-btn')
-        ?.classList.contains('!bg-purple-600');
+      const isFiscalYearActive = isQuickPeriodButtonActive('fiscal-year-btn');
+      const isPrevFiscalYearActive = isQuickPeriodButtonActive('prev-fiscal-year-btn');
 
       if (isFiscalYearActive) {
         setFiscalYearFilter(document.getElementById('fiscal-year-btn'));
@@ -1867,15 +2055,15 @@ function computeTagTotals(filteredTree) {
   filteredTree.forEach((block) => {
     block.children.forEach((item) => {
       const safeAmount = parseInt(item.amount || 0, 10);
-      const isCollection = (item.memo || '').match(/#入金|#支払|#決済/);
+      const isCollection = isSettlementMemo(item.memo);
 
       const tags = (item.memo || '').match(/[#＃][^\s　,、。\.・()（）「」#＃]+/g) || [];
       const blockTags = (block.memo || '').match(/[#＃][^\s　,、。\.・()（）「」#＃]+/g) || [];
       const rawTags = [...tags, ...blockTags].map((t) => t.replace('＃', '#'));
-      let allTags = [...new Set(rawTags)]; // 重複排除と正規化
+      let allTags = [...new Set(rawTags)];
 
-      // 決済行は元取引のプロジェクトタグを引き継いでいるため、決済タグ以外には計上しない（二重計上防止）
-      if (isCollection) allTags = allTags.filter((tag) => /^#(入金|支払|決済)/.test(tag));
+      // Settlement rows inherit project tags; only count settlement tags (avoid double-counting)
+      if (isCollection) allTags = allTags.filter((tag) => SETTLEMENT_TAG_EXACT_RE.test(tag));
 
       allTags.forEach((tag) => {
         if (!tagTotals[tag]) tagTotals[tag] = { amount: 0, items: [] };
@@ -1892,9 +2080,31 @@ function computeTagTotals(filteredTree) {
 }
 
 // タグ集計を左側 TOC の下部とスマホ用エリアに（既存表示を置き換えて）描画する
+const TAG_SECTION_LIMIT = 10;
+let showAllTags = false; // Kept across re-renders
+
+function createTagToggleButton(total, className, tagTotals) {
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = className;
+  btn.textContent = showAllTags ? '上位10件に戻す' : `すべて表示（${total}件）`;
+  btn.setAttribute('aria-expanded', String(showAllTags));
+  btn.onclick = (e) => {
+    e.preventDefault();
+    showAllTags = !showAllTags;
+    renderTagSections(tagTotals);
+  };
+  return btn;
+}
+
 function renderTagSections(tagTotals) {
   const tocList = document.getElementById('toc-list');
   if (tocList) tocList.querySelectorAll('.toc-tag-section').forEach((el) => el.remove());
+
+  // Sort by amount (largest first); show the top entries unless the user expanded the list
+  const sortedTags = Object.entries(tagTotals).sort((a, b) => b[1].amount - a[1].amount);
+  const visibleTags = showAllTags ? sortedTags : sortedTags.slice(0, TAG_SECTION_LIMIT);
+  const hasMoreTags = sortedTags.length > TAG_SECTION_LIMIT;
 
   // 左側 TOC の下部にタグ一覧を生成
   if (tocList && Object.keys(tagTotals).length > 0) {
@@ -1904,24 +2114,31 @@ function renderTagSections(tagTotals) {
     tagDivider.innerHTML = `<svg class="w-3 h-3"><use href="#icon-folder"></use></svg> PROJECTS`;
     tocList.appendChild(tagDivider);
 
-    // タグを金額が大きい順にソートして表示
-    Object.entries(tagTotals)
-      .sort((a, b) => b[1].amount - a[1].amount)
-      .slice(0, 10) // 💡 ここに .slice(0, 10) を追加すると上位10件のみの表示になります
-      .forEach(([tag, data]) => {
-        const a = document.createElement('a');
-        a.className =
-          'toc-tag-section group block px-2 py-1.5 hover:bg-slate-100 rounded transition-colors cursor-pointer flex justify-between items-center';
-        a.innerHTML = `
-          <span class="text-sm font-medium text-slate-600 group-hover:text-blue-600 transition-colors truncate">${escapeHtml(tag)}</span>
-          <span class="text-[10px] tabular-nums tracking-tight font-bold text-slate-400 bg-slate-100 px-1.5 py-0.5 rounded group-hover:bg-white transition-colors">¥${jpyFormatter.format(data.amount)}</span>
-        `;
-        a.onclick = (e) => {
-          e.preventDefault();
-          showTagModal(tag, data);
-        };
-        tocList.appendChild(a);
-      });
+    visibleTags.forEach(([tag, data]) => {
+      const a = document.createElement('a');
+      a.href = '#';
+      a.className =
+        'toc-tag-section group block px-2 py-1.5 hover:bg-slate-100 rounded transition-colors cursor-pointer flex justify-between items-center';
+      a.innerHTML = `
+        <span class="text-sm font-medium text-slate-600 group-hover:text-blue-600 transition-colors truncate">${escapeHtml(tag)}</span>
+        <span class="text-[10px] tabular-nums tracking-tight font-bold text-slate-400 bg-slate-100 px-1.5 py-0.5 rounded group-hover:bg-white transition-colors">¥${jpyFormatter.format(data.amount)}</span>
+      `;
+      a.onclick = (e) => {
+        e.preventDefault();
+        showTagModal(tag, data);
+      };
+      tocList.appendChild(a);
+    });
+
+    if (hasMoreTags) {
+      tocList.appendChild(
+        createTagToggleButton(
+          sortedTags.length,
+          'toc-tag-section block w-full text-left px-2 py-1.5 text-xs font-medium text-blue-600 hover:bg-slate-100 rounded transition-colors cursor-pointer',
+          tagTotals,
+        ),
+      );
+    }
   }
 
   // スマホ用のタグ表示エリアを（既存のものがあれば削除して）再生成
@@ -1939,19 +2156,25 @@ function renderTagSections(tagTotals) {
     const grid = document.createElement('div');
     grid.className = 'grid grid-cols-2 gap-3';
 
-    Object.entries(tagTotals)
-      .sort((a, b) => b[1].amount - a[1].amount)
-      .slice(0, 10) // 💡 スマホ用表示も同様に制限する場合は追加します
-      .forEach(([tag, data]) => {
-        const btn = document.createElement('button');
-        btn.className =
-          'text-left p-3 rounded-lg bg-slate-50 hover:bg-slate-100 border border-slate-100 transition-colors cursor-pointer flex flex-col gap-1';
-        btn.innerHTML = `<span class="text-sm font-bold text-slate-700 truncate">${escapeHtml(tag)}</span><span class="text-xs tabular-nums tracking-tight text-slate-500">¥${jpyFormatter.format(data.amount)}</span>`;
-        btn.onclick = () => showTagModal(tag, data);
-        grid.appendChild(btn);
-      });
+    visibleTags.forEach(([tag, data]) => {
+      const btn = document.createElement('button');
+      btn.className =
+        'text-left p-3 rounded-lg bg-slate-50 hover:bg-slate-100 border border-slate-100 transition-colors cursor-pointer flex flex-col gap-1';
+      btn.innerHTML = `<span class="text-sm font-bold text-slate-700 truncate">${escapeHtml(tag)}</span><span class="text-xs tabular-nums tracking-tight text-slate-500">¥${jpyFormatter.format(data.amount)}</span>`;
+      btn.onclick = () => showTagModal(tag, data);
+      grid.appendChild(btn);
+    });
 
     mobileTagContainer.appendChild(grid);
+    if (hasMoreTags) {
+      mobileTagContainer.appendChild(
+        createTagToggleButton(
+          sortedTags.length,
+          'mt-4 w-full text-center py-2 text-xs font-medium text-blue-600 hover:bg-slate-50 rounded-lg transition-colors cursor-pointer',
+          tagTotals,
+        ),
+      );
+    }
     mainContainer.appendChild(mobileTagContainer);
   }
 }
@@ -2208,9 +2431,7 @@ function renderData(focusBlockId = null) {
     block.children.forEach((item) => {
       const safeAmount = parseInt(item.amount || 0, 10);
 
-      // 決済（回収・支払）行は総合計から除外する
-      const isCollection = (item.memo || '').match(/#入金|#支払|#決済/);
-      if (!isCollection) {
+      if (!isSettlementMemo(item.memo)) {
         grandTotal += safeAmount;
       }
     });
@@ -2293,8 +2514,7 @@ function updateOrCreateBlockElement(block, existingEl = null) {
   }
 
   const blockTotal = block.children.reduce((sum, item) => {
-    const isCollection = (item.memo || '').match(/#入金|#支払|#決済/);
-    return isCollection ? sum : sum + parseInt(item.amount || 0, 10);
+    return isSettlementMemo(item.memo) ? sum : sum + parseInt(item.amount || 0, 10);
   }, 0);
 
   const today = new Date();
@@ -2330,8 +2550,7 @@ function updateOrCreateBlockElement(block, existingEl = null) {
 
   let itemsHtml = '';
   block.children.forEach((item) => {
-    // この行が決済行かどうかを判定
-    const isCollection = (item.memo || '').match(/#入金|#支払|#決済/);
+    const isCollection = isSettlementMemo(item.memo);
 
     let dateDisp = '';
     let badgeHtml = '';
@@ -2372,7 +2591,7 @@ function updateOrCreateBlockElement(block, existingEl = null) {
             : ' text-slate-500 bg-slate-100 border-slate-200 focus:ring-blue-200 hover:bg-slate-200';
         }
 
-        dateDisp = `${badgeHtml}<span data-id="${item.id}" data-field="created_at" data-year="${displayYear}" contenteditable="true"    class="${dateClasses}" title="${dateTitle}">${imm}/${idd}</span>`;
+        dateDisp = `${badgeHtml}<span data-id="${item.id}" data-field="created_at" data-year="${displayYear}" contenteditable="true" role="textbox" aria-label="日付（月/日）"    class="${dateClasses}" title="${dateTitle}">${imm}/${idd}</span>`;
       }
     }
 
@@ -2382,7 +2601,7 @@ function updateOrCreateBlockElement(block, existingEl = null) {
       ? 'text-slate-400 bg-transparent border-transparent hover:bg-slate-100 focus:bg-slate-100'
       : 'text-blue-600 bg-blue-50 border-blue-200 hover:bg-blue-100 focus:bg-blue-100';
 
-    let accountDisp = `<input type="text" data-id="${item.id}" data-field="account" list="account-suggestions" value="${escapeHtml(accStr)}" placeholder="科目"     class="text-xs px-1.5 py-0.5 rounded mr-2 outline-none focus:ring-2 focus:ring-blue-400 cursor-text transition-colors w-[84px] sm:w-[100px] shrink-0 text-left placeholder-blue-300 border ${accClasses}">`;
+    let accountDisp = `<input type="text" data-id="${item.id}" data-field="account" aria-label="科目" list="account-suggestions" value="${escapeHtml(accStr)}" placeholder="科目"     class="text-xs px-1.5 py-0.5 rounded mr-2 outline-none focus:ring-2 focus:ring-blue-400 cursor-text transition-colors w-[84px] sm:w-[100px] shrink-0 text-left placeholder-blue-300 border ${accClasses}">`;
 
     // 決済ボタンの表示制御（すでに決済済みの行には表示しない）
     let checkBtnHtml = '';
@@ -2399,10 +2618,10 @@ function updateOrCreateBlockElement(block, existingEl = null) {
         <div class="flex items-center flex-1 min-w-0">
           ${dateDisp}
           ${accountDisp}
-          <span data-id="${item.id}" data-field="memo" contenteditable="true"     class="${isCollection ? 'text-slate-500' : 'text-blue-950'} font-medium truncate outline-none focus:bg-blue-50 focus:ring-2 focus:ring-blue-200 px-1 rounded cursor-text transition-colors empty:inline-block empty:min-w-12 empty:bg-slate-100 empty:before:content-['✎_未入力'] empty:before:text-slate-400 empty:before:text-xs empty:before:font-normal empty:before:pointer-events-none empty:focus:before:opacity-50">${escapeHtml(item.memo)}</span>
+          <span data-id="${item.id}" data-field="memo" contenteditable="true" role="textbox" aria-label="メモ"     class="${isCollection ? 'text-slate-500' : 'text-blue-950'} font-medium truncate outline-none focus:bg-blue-50 focus:ring-2 focus:ring-blue-200 px-1 rounded cursor-text transition-colors empty:inline-block empty:min-w-12 empty:bg-slate-100 empty:before:content-['✎_未入力'] empty:before:text-slate-400 empty:before:text-xs empty:before:font-normal empty:before:pointer-events-none empty:focus:before:opacity-50">${escapeHtml(item.memo)}</span>
         </div>
         <div class="flex items-center space-x-1.5 sm:space-x-4 ml-2 sm:ml-auto shrink-0">
-          <input type="text" data-id="${item.id}" data-field="amount" inputmode="decimal" placeholder="0" value="${item.amount !== null && item.amount !== '' && item.amount !== undefined ? jpyFormatter.format(item.amount) : ''}"      class="bg-transparent border-0 p-0 font-medium tabular-nums tracking-tight ${isCollection ? 'text-slate-400' : 'text-blue-950'} text-right outline-none focus:bg-blue-50 focus:ring-2 focus:ring-blue-200 px-1 rounded cursor-text transition-colors w-[50px] sm:w-[80px]"><span class="text-slate-400 text-xs font-sans hidden sm:inline">円</span>
+          <input type="text" data-id="${item.id}" data-field="amount" aria-label="金額" inputmode="decimal" placeholder="0" value="${item.amount !== null && item.amount !== '' && item.amount !== undefined ? jpyFormatter.format(item.amount) : ''}"      class="bg-transparent border-0 p-0 font-medium tabular-nums tracking-tight ${isCollection ? 'text-slate-400' : 'text-blue-950'} text-right outline-none focus:bg-blue-50 focus:ring-2 focus:ring-blue-200 px-1 rounded cursor-text transition-colors w-[50px] sm:w-[80px]"><span class="text-slate-400 text-xs font-sans hidden sm:inline">円</span>
           <div class="flex items-center space-x-0.5 sm:space-x-1 md:opacity-0 md:group-hover/item:opacity-100 focus-within:opacity-100 transition-opacity">
             ${checkBtnHtml}
             <button data-action="duplicateRecord" data-id="${item.id}" aria-label="複製" class="text-slate-300 hover:text-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-600/30 rounded p-1.5 sm:p-2 -m-1 transition-colors cursor-pointer" title="複製">
@@ -2455,6 +2674,17 @@ function updateOrCreateBlockElement(block, existingEl = null) {
     dateInputClass += ' text-slate-600 bg-transparent';
   }
 
+  // Preserve in-progress add-form values across re-renders
+  const existingForm = existingEl ? document.getElementById(`block-form-${block.id}`) : null;
+  const formDraft = existingForm
+    ? {
+        date: existingForm.querySelector('.item-date')?.value ?? '',
+        account: existingForm.querySelector('.item-account')?.value ?? '',
+        memo: existingForm.querySelector('.item-memo')?.value ?? '',
+        amount: existingForm.querySelector('.item-amount')?.value ?? '',
+      }
+    : null;
+
   blockEl.innerHTML = `
     <button data-action="saveTemplate" data-block-id="${block.id}" class="absolute -top-3 -left-3 opacity-100 md:opacity-0 group-hover/block:opacity-100 bg-white border border-slate-200 text-slate-400 hover:text-blue-600 hover:border-blue-600/50 hover:shadow-[0_0_15px_rgba(37,99,235,0.3)] hover:scale-110 p-2 rounded-xl transition-all duration-300 cursor-pointer flex items-center justify-center z-10" title="このブロックをテンプレートとして保存">
       <svg class="w-5 h-5"><use href="#icon-squares-plus"></use></svg>
@@ -2488,21 +2718,35 @@ function updateOrCreateBlockElement(block, existingEl = null) {
           <button type="submit" aria-label="明細を追加" class="text-blue-600 bg-blue-600/10 hover:bg-blue-600/20 rounded-full w-8 h-8 flex items-center justify-center text-xl leading-none font-light sm:hidden transition-colors outline-none focus:ring-2 focus:ring-blue-600/50 shrink-0">+</button>
           <div class="flex items-center bg-slate-50 rounded-md px-1 py-1 border border-slate-200 transition-colors">
             <button type="button" data-action="adjustDate" data-delta="-1" aria-label="1日戻す" class="text-slate-400 hover:text-slate-800 w-8 h-8 flex items-center justify-center font-bold cursor-pointer outline-none transition-colors touch-manipulation" title="-1日">-</button>
-            <input type="date" class="${dateInputClass}" value="${defaultDate}" >
+            <input type="date" aria-label="追加する明細の日付" class="${dateInputClass}" value="${defaultDate}">
             <button type="button" data-action="adjustDate" data-delta="1" aria-label="1日進める" class="text-slate-400 hover:text-slate-800 w-8 h-8 flex items-center justify-center font-bold cursor-pointer outline-none transition-colors touch-manipulation" title="+1日">+</button>
           </div>
-          <input type="text" placeholder="科目" value="${escapeHtml(defaultAccount)}" list="account-suggestions"    class="item-account bg-transparent border-0 focus:ring-0 p-0 text-slate-600 placeholder-slate-400 w-20 shrink-0 text-sm outline-none text-center" style="min-width: 60px;">
+          <input type="text" aria-label="追加する明細の科目" placeholder="科目" value="${escapeHtml(defaultAccount)}" list="account-suggestions"    class="item-account bg-transparent border-0 focus:ring-0 p-0 text-slate-600 placeholder-slate-400 w-20 shrink-0 text-sm outline-none text-center" style="min-width: 60px;">
         </div>
 
         <div class="flex items-center gap-2 sm:gap-3 w-full sm:w-auto sm:flex-1 pl-6 sm:pl-0 mt-2 sm:mt-0">
-          <input type="text" placeholder="明細を追加..." list="memo-suggestions"     class="item-memo bg-transparent border-0 focus:ring-0 p-0 text-blue-950 placeholder-slate-400 flex-1 text-sm font-medium outline-none min-w-[100px]">
-          <input type="text" inputmode="decimal" placeholder="金額(数式OK)" class="item-amount bg-transparent border-0 focus:ring-0 p-0 text-right tabular-nums tracking-tight text-blue-950 placeholder-slate-400 w-24 sm:w-32 shrink-0 text-sm outline-none" style="min-width: 104px;"    title="数式計算（+ - * /）が使えます">
+          <input type="text" aria-label="追加する明細のメモ" placeholder="明細を追加..." list="memo-suggestions"     class="item-memo bg-transparent border-0 focus:ring-0 p-0 text-blue-950 placeholder-slate-400 flex-1 text-sm font-medium outline-none min-w-[100px]">
+          <input type="text" aria-label="追加する明細の金額（数式可）" inputmode="decimal" placeholder="金額(数式OK)" class="item-amount bg-transparent border-0 focus:ring-0 p-0 text-right tabular-nums tracking-tight text-blue-950 placeholder-slate-400 w-24 sm:w-32 shrink-0 text-sm outline-none" style="min-width: 104px;"    title="数式計算（+ - * /）が使えます">
         </div>
         <button type="submit" class="hidden">追加</button>
       </form>
       </div>
     </div>
   `;
+
+  if (formDraft) {
+    const form = blockEl.querySelector(`#block-form-${block.id}`);
+    if (form) {
+      const dateEl = form.querySelector('.item-date');
+      const accountEl = form.querySelector('.item-account');
+      const memoEl = form.querySelector('.item-memo');
+      const amountEl = form.querySelector('.item-amount');
+      if (dateEl) dateEl.value = formDraft.date;
+      if (accountEl) accountEl.value = formDraft.account;
+      if (memoEl) memoEl.value = formDraft.memo;
+      if (amountEl) amountEl.value = formDraft.amount;
+    }
+  }
   return blockEl;
 }
 
@@ -2595,26 +2839,50 @@ function insertTemplate(templateId) {
     return;
   }
 
-  // 新しい親ブロックを作成
-  db.run('INSERT INTO records (memo, amount) VALUES (?, ?)', [tplName, null]);
-  const parentRes = db.exec('SELECT last_insert_rowid()');
-  const parentId = parentRes[0].values[0][0];
+  // Validate every item before inserting anything, so a broken template never leaves an empty block
+  const items = [];
+  for (const item of tplData) {
+    if (!item || typeof item !== 'object') {
+      alert('テンプレートデータが破損しています（不正な明細が含まれています）。');
+      return;
+    }
+    const memo = typeof item.memo === 'string' ? item.memo : '';
+    const account = typeof item.account === 'string' ? item.account : null;
+    // テンプレート保存時の金額をそのまま展開する（固定費などで便利にするため）
+    let amount = null;
+    if (typeof item.amount === 'number' && Number.isFinite(item.amount)) {
+      amount = Math.trunc(item.amount);
+    } else if (typeof item.amount === 'string' && /^-?\d+$/.test(item.amount.trim())) {
+      amount = parseInt(item.amount.trim(), 10);
+    } else if (item.amount !== '' && item.amount !== undefined && item.amount !== null) {
+      alert('テンプレートデータが破損しています（金額が数値ではありません）。');
+      return;
+    }
+    items.push({ memo, amount, account });
+  }
 
-  // 今日の日付を取得
-  const today = new Date();
   const dateStr = `${getTodayString()} 00:00:00`;
 
-  // 子要素を展開して一気にINSERT
   let insertStmt = null;
+  let parentId;
+  db.run('BEGIN TRANSACTION;');
   try {
+    db.run('INSERT INTO records (memo, amount) VALUES (?, ?)', [String(tplName || ''), null]);
+    const parentRes = db.exec('SELECT last_insert_rowid()');
+    parentId = parentRes[0].values[0][0];
+
     insertStmt = db.prepare(
       'INSERT INTO records (parent_id, memo, amount, account, created_at) VALUES (?, ?, ?, ?, ?)',
     );
-    for (let item of tplData) {
-      // テンプレート保存時の金額をそのまま展開する（固定費などで便利にするため）
-      const safeAmount = item.amount === '' || item.amount === undefined ? null : item.amount;
-      insertStmt.run([parentId, item.memo, safeAmount, item.account, dateStr]);
+    for (const item of items) {
+      insertStmt.run([parentId, item.memo, item.amount, item.account, dateStr]);
     }
+    db.run('COMMIT;');
+  } catch (e) {
+    db.run('ROLLBACK;');
+    console.error('Template insert failed', e);
+    alert('テンプレートの展開に失敗しました。');
+    return;
   } finally {
     if (insertStmt) insertStmt.free();
   }
@@ -2849,7 +3117,7 @@ async function saveGrindFile(isSaveAs = false) {
     if (isSaveAs || !fileHandle || fileHandle.isDummy) {
       if ('showSaveFilePicker' in window) {
         try {
-          const todayStr = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+          const todayStr = getTodayString().replace(/-/g, '');
           fileHandle = await window.showSaveFilePicker({
             suggestedName: `GrindMoney_${todayStr}.money`,
             types: [
@@ -2860,6 +3128,12 @@ async function saveGrindFile(isSaveAs = false) {
             ],
           });
         } catch (err) {
+          if (err && err.name !== 'AbortError') {
+            showToast(
+              '保存先の選択に失敗しました',
+              '<span class="text-red-400">❌</span>',
+            );
+          }
           return;
         }
       } else {
@@ -2868,7 +3142,7 @@ async function saveGrindFile(isSaveAs = false) {
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
-        const todayStr = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+        const todayStr = getTodayString().replace(/-/g, '');
         a.download = fileHandle && fileHandle.name ? fileHandle.name : `GrindMoney_${todayStr}.money`;
         document.body.appendChild(a);
         a.click();
@@ -2876,8 +3150,9 @@ async function saveGrindFile(isSaveAs = false) {
         setTimeout(() => URL.revokeObjectURL(url), 1000);
 
         setDirty(false);
+        clearMigratedLocalStorageIfPresent();
         showToast(
-          `データを "${escapeHtml(a.download)}" としてダウンロードしました`,
+          `データを "${a.download}" としてダウンロードしました`,
           '<span class="text-green-400">💾</span>',
         );
         showSaveSuccessFeedback();
@@ -2912,9 +3187,10 @@ async function saveGrindFile(isSaveAs = false) {
     await writable.write(data);
     await writable.close();
     setDirty(false);
+    clearMigratedLocalStorageIfPresent();
 
     showToast(
-      `データを "${escapeHtml(fileHandle.name)}" に保存しました`,
+      `データを "${fileHandle.name}" に保存しました`,
       '<span class="text-green-400">💾</span>',
     );
     showSaveSuccessFeedback();
@@ -3014,11 +3290,7 @@ async function processFileHandle(handle, isDummy = false) {
     let newDb;
     try {
       newDb = new SQL.Database(Uints);
-      // sql.js は不正なバイト列でも生成時には例外を出さないため、ここで中身を検証する
-      const check = newDb.exec(
-        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'records'",
-      );
-      if (check.length === 0) throw new Error('records table not found');
+      if (!hasRecordsTable(newDb)) throw new Error('records table not found');
     } catch (e) {
       if (newDb) newDb.close();
       throw new Error('Invalid GrindMoney database file.');
@@ -3039,6 +3311,9 @@ async function processFileHandle(handle, isDummy = false) {
     committed = true;
     migrateDatabase();
 
+    // Block ids repeat across files: drop old block elements so their form input is not carried over
+    document.querySelectorAll('#blocks-container > [id^="block-"]').forEach((el) => el.remove());
+
     loadSettingsFromDb(); // ファイル固有の設定をUIに反映
 
     // 🎯 ファイル切り替え時のグローバル状態完全リセット（データ汚染防止）
@@ -3057,7 +3332,7 @@ async function processFileHandle(handle, isDummy = false) {
     setDirty(false);
 
     showToast(
-      `ファイル "${escapeHtml(file.name)}" を読み込みました`,
+      `ファイル "${file.name}" を読み込みました`,
       '<span class="text-blue-400">📂</span>',
     );
 
@@ -3138,7 +3413,7 @@ function showExportModal() {
     } else if (filterEl && filterEl.value !== 'all') {
       periodText = filterEl.options[filterEl.selectedIndex].text;
     }
-    infoEl.innerHTML = `💡 現在表示中の <b>「${periodText}」</b> が出力されます。`;
+    infoEl.innerHTML = `💡 現在表示中の <b>「${escapeHtml(periodText)}」</b> が出力されます。`;
   }
 
   modal.classList.remove('hidden');
@@ -3215,7 +3490,7 @@ function exportCSV(format = 'yayoi') {
   }
 
   const includeCollection = document.getElementById('export-collections')?.checked;
-  const isCollectionMemo = (m) => /#入金|#支払|#決済/.test(m || '');
+  const isCollectionMemo = isSettlementMemo;
 
   // 決済行と元の発生行の対応（期間フィルターに関係なく、ファイル全体から求める）
   const { sourceOf, sourceInfo } = getCollectionSources();
@@ -3330,8 +3605,8 @@ function exportCSV(format = 'yayoi') {
 
     // 決済行の向きはタグで確定する（口座科目は借方科目扱いのため、符号反転で入出金が逆転するのを防ぐ）
     if (isCollection) {
-      if (childMemo.includes('#入金')) isIncome = true;
-      else if (childMemo.includes('#支払')) isIncome = false;
+      if (hasExactTag(childMemo, '入金')) isIncome = true;
+      else if (hasExactTag(childMemo, '支払')) isIncome = false;
     }
 
     // メモのタグで指定された相手科目（発生行のみ）
@@ -3511,19 +3786,13 @@ function exportCSV(format = 'yayoi') {
   }
 }
 
-// メモのタグから仕訳の相手科目を決める（タグによる指定が無ければ null）
+// Partner account from explicit tags only (fullwidth ＃ accepted; no keyword heuristics)
 function getTaggedPartnerAccount(memo, isIncome) {
-  if (memo.includes('#現金')) return '現金';
-  if (memo.includes('#預金') || memo.includes('#振込')) return '普通預金';
-  if (
-    memo.includes('#クレカ') ||
-    memo.includes('#カード') ||
-    memo.includes('#未払') ||
-    memo.toUpperCase().includes('AMEX') ||
-    memo.includes('楽天')
-  )
-    return '未払金';
-  if (memo.includes('#掛')) return isIncome ? '売掛金' : '買掛金';
+  const hasTag = (name) => hasExactTag(memo, name);
+  if (hasTag('現金')) return '現金';
+  if (hasTag('預金') || hasTag('振込')) return '普通預金';
+  if (hasTag('クレカ') || hasTag('カード') || hasTag('未払')) return '未払金';
+  if (hasTag('掛')) return isIncome ? '売掛金' : '買掛金';
   return null;
 }
 
@@ -3539,12 +3808,11 @@ function getCollectionSources() {
   );
   if (res.length === 0) return { sourceOf, sourceInfo };
 
-  const isCollectionMemo = (m) => /#入金|#支払|#決済/.test(m || '');
   const occurrenceIndex = new Map(); // "ブロックID + メモ" -> 一致する発生行IDの配列
   const legacyCollections = [];
 
   res[0].values.forEach(([id, parentId, memo, sourceId, blockMemo, amount, account]) => {
-    if (isCollectionMemo(memo)) {
+    if (isSettlementMemo(memo)) {
       if (sourceId !== null && sourceId !== undefined) sourceOf.set(id, sourceId);
       else legacyCollections.push({ id, parentId, memo: memo || '' });
     } else {
@@ -3559,7 +3827,7 @@ function getCollectionSources() {
   });
 
   legacyCollections.forEach(({ id, parentId, memo }) => {
-    const match = memo.match(/^(.*?)\s*\(決済\)\s*#(?:入金|支払)\s*$/);
+    const match = memo.match(/^(.*?)\s*\(決済\)\s*[#＃](?:入金|支払)\s*$/);
     if (!match) return;
     const candidates = occurrenceIndex.get(`${parentId}\u0000${match[1].trim()}`) || [];
     if (candidates.length === 1) sourceOf.set(id, candidates[0]); // 複数候補は推測しない
@@ -3709,24 +3977,35 @@ function updateCSVPreview() {
   let defaultMemo = oldVals.memo;
   let defaultAmount = oldVals.amount;
 
-  // --- 💡 Gold-Rank: ヘッダー文字からの自動マッピング推論 ---
+  // Header-based auto-mapping: exact labels first, then fuzzy. No blind column fallback.
+  const findCol = (exactList, fuzzyRe) => {
+    for (const label of exactList) {
+      const exactIdx = firstRow.findIndex((c) => c && String(c).trim() === label);
+      if (exactIdx !== -1) return exactIdx.toString();
+    }
+    const fuzzyIdx = firstRow.findIndex((c) => c && fuzzyRe.test(String(c)));
+    return fuzzyIdx !== -1 ? fuzzyIdx.toString() : '-1';
+  };
   if (defaultDate === '-1' && maxCols >= 1) {
-    const dateIdx = firstRow.findIndex((c) => c && c.match(/日|date/i));
-    defaultDate = dateIdx !== -1 ? dateIdx.toString() : '0';
-  }
-  if (mapAccount && defaultAccount === '-1' && maxCols >= 4) {
-    const accIdx = firstRow.findIndex((c) => c && c.match(/科目|account/i));
-    defaultAccount = accIdx !== -1 ? accIdx.toString() : '3';
-  }
-  if (defaultMemo === '-1' && maxCols >= 2) {
-    const memoIdx = firstRow.findIndex(
-      (c) => c && c.match(/摘要|メモ|内容|店名|利用先|memo|description/i),
+    defaultDate = findCol(
+      ['日付', '取引日', '利用日', '年月日', 'Date', 'date'],
+      /日付|取引日|利用日|年月日|日時|^date$/i,
     );
-    defaultMemo = memoIdx !== -1 ? memoIdx.toString() : '1';
   }
-  if (defaultAmount === '-1' && maxCols >= 3) {
-    const amountIdx = firstRow.findIndex((c) => c && c.match(/金額|支払|出金|入金|利用額|amount/i));
-    defaultAmount = amountIdx !== -1 ? amountIdx.toString() : '2';
+  if (mapAccount && defaultAccount === '-1' && maxCols >= 1) {
+    defaultAccount = findCol(['勘定科目', '科目', 'Account', 'account'], /勘定科目|^科目$|account/i);
+  }
+  if (defaultMemo === '-1' && maxCols >= 1) {
+    defaultMemo = findCol(
+      ['摘要', 'メモ', '内容', '店名', '利用先', '支払先', 'Memo', 'Description'],
+      /摘要|メモ|内容|店名|利用先|支払先|memo|description/i,
+    );
+  }
+  if (defaultAmount === '-1' && maxCols >= 1) {
+    defaultAmount = findCol(
+      ['金額', '利用額', '出金額', '入金額', 'Amount', 'amount'],
+      /金額|利用額|出金額|入金額|^amount$/i,
+    );
   }
 
   let optionsHtml = `<option value="-1">-- 選択しない --</option>`;
@@ -3855,9 +4134,11 @@ function executeCSVImport() {
   // モーダルを閉じると pendingCSVData がクリアされてしまうため、退避しておく
   const dataToImport = [...pendingCSVData];
 
-  closeCSVModal();
-
+  // Keep the modal (and pending data) open on a date error so the mapping can be fixed
+  let keepModalOpen = false;
   let successCount = 0;
+  let skippedAmountCount = 0;
+  let skippedInsertCount = 0;
   let suggestStmt = null;
   let insertStmt = null;
 
@@ -3894,6 +4175,14 @@ function executeCSVImport() {
       console.warn('インポート用SQLの準備に失敗しました', e);
     }
 
+    const strictDate = (y, m, d) => {
+      const dt = new Date(y, m - 1, d);
+      return dt.getFullYear() === y && dt.getMonth() === m - 1 && dt.getDate() === d
+        ? dt
+        : null;
+    };
+    const TIME_SUFFIX = '(?:[ T]\\d{1,2}:\\d{2}(?::\\d{2})?)?';
+
     for (let i = startIndex; i < endIndex; i++) {
       const cols = dataToImport[i];
       if (cols.length === 0 || cols.every((c) => !c.trim())) continue;
@@ -3903,74 +4192,48 @@ function executeCSVImport() {
         mapAccount !== -1 && cols[mapAccount] !== undefined ? cols[mapAccount].trim() : '';
       const memo = mapMemo !== -1 && cols[mapMemo] !== undefined ? cols[mapMemo].trim() : '';
 
-      // "¥1,500" のようなカンマや記号付き金額もパースできるように数字とマイナス以外を除去
-      // 日本の銀行CSVでよく使われる「△」をマイナスとして処理する
-      // 将来的にパーサーが数値を返した場合の TypeError を防ぐため、明示的に String にキャスト
       const rawAmount =
         mapAmount !== -1 && cols[mapAmount] !== undefined ? String(cols[mapAmount]) : '';
 
-      // まず全角数字・全角マイナス等を半角に変換
-      let normalizedAmount = rawAmount
-        .replace(/[０-９]/g, (s) => String.fromCharCode(s.charCodeAt(0) - 0xfee0))
-        .replace(/[ー−△]/g, '-');
-
-      normalizedAmount = normalizedAmount.replace(/(?:\d+[.,])+\d+/g, (match) => {
-        const lastComma = match.lastIndexOf(',');
-        const lastDot = match.lastIndexOf('.');
-        if (lastComma > lastDot && lastDot !== -1) return match.replace(/\./g, '').replace(/,/g, '.');
-        else if (lastDot > lastComma && lastComma !== -1) return match.replace(/,/g, '');
-        else if (lastComma !== -1) {
-          if (/,\d{3}$/.test(match)) return match.replace(/,/g, '');
-          else return match.replace(/,/g, '.');
-        } else {
-          if (match.match(/\./g) && match.match(/\./g).length > 1) return match.replace(/\./g, '');
-          return match;
-        }
-      });
-
-      // 会計特有の (1,500) というマイナス表記を -1500 に変換する
-      const trimmedAmount = normalizedAmount.trim();
-      if (/^\([\d,.]+\)$/.test(trimmedAmount)) {
-        normalizedAmount = '-' + trimmedAmount.replace(/[()]/g, '');
-      }
-
-      // その後、半角数字・ピリオド・マイナス以外を除去
-      const amountStr = normalizedAmount.replace(/[^\d.-]/g, '');
-
-      // ハイフンが複数ある、または先頭・末尾以外にある不正なフォーマットは弾く
-      const isInvalidHyphen =
-        (amountStr.match(/-/g) || []).length > 1 ||
-        (amountStr.includes('-') && !amountStr.startsWith('-') && !amountStr.endsWith('-'));
-
       let amount = NaN;
-      if (!isInvalidHyphen && amountStr !== '') {
-        amount = Math.round(parseFloat(amountStr));
-        // 文字列の末尾が「-」で終わっている場合はマイナス反転させる
-        if (amountStr.endsWith('-') && !amountStr.startsWith('-')) {
-          amount = -Math.abs(amount);
+      if (rawAmount.trim() !== '') {
+        const normalizedAmount = normalizeAmountText(rawAmount);
+        if (normalizedAmount !== null) {
+          const withoutCurrency = normalizedAmount.replace(/[¥￥$円\s,]/g, '');
+          // "1.234" may be a thousands separator or a decimal: skip and report instead of guessing
+          const isAmbiguousDot =
+            !rawAmount.includes(',') && /^-?\d{1,3}\.\d{3}$/.test(withoutCurrency);
+          if (!isAmbiguousDot && /^-?\d+(\.\d+)?$/.test(withoutCurrency)) {
+            amount = roundAwayFromZero(parseFloat(withoutCurrency));
+            if (amount === null || amount > 10000000000000 || amount < -10000000000000) {
+              amount = NaN;
+            }
+          }
         }
-        if (amount > 10000000000000 || amount < -10000000000000) amount = NaN;
       }
 
-      // 摘要(メモ)が空の行でも、金額が存在すればインポートする
-      if (!isNaN(amount)) {
-        let parsedDate = new Date(dateStr);
-        // YYYY-MM-DD形式等のタイムゾーン問題を回避する
-        const dStr = dateStr.trim();
-        // 実在しない年月日（2/31、13月など）は Date が繰り上げてしまうため無効化する
-        const strictDate = (y, m, d) => {
-          const dt = new Date(y, m - 1, d);
-          return dt.getFullYear() === y && dt.getMonth() === m - 1 && dt.getDate() === d
-            ? dt
-            : new Date(NaN);
-        };
-        // 末尾の時刻（"2024/01/05 10:30" や "2024-01-05T10:30:00"）は日付判定の対象外にする
-        const TIME_SUFFIX = '(?:[ T]\\d{1,2}:\\d{2}(?::\\d{2})?)?';
+      if (isNaN(amount)) {
+        skippedAmountCount++;
+        continue;
+      }
+
+      let parsedDate = null;
+      const dStr = dateStr.trim();
+      if (dStr !== '') {
         const ymd = dStr.match(
           new RegExp(`^(\\d{4})[\\/\\-.年](\\d{1,2})[\\/\\-.月](\\d{1,2})日?${TIME_SUFFIX}$`),
         );
-        const mdy = dStr.match(new RegExp(`^(\\d{1,2})[\\/\\-.](\\d{1,2})[\\/\\-.](\\d{4})${TIME_SUFFIX}$`));
-        if (ymd) {
+        const mdy = dStr.match(
+          new RegExp(`^(\\d{1,2})[\\/\\-.](\\d{1,2})[\\/\\-.](\\d{4})${TIME_SUFFIX}$`),
+        );
+        const compact = dStr.match(/^(\d{4})(\d{2})(\d{2})$/);
+        if (compact) {
+          parsedDate = strictDate(
+            parseInt(compact[1], 10),
+            parseInt(compact[2], 10),
+            parseInt(compact[3], 10),
+          );
+        } else if (ymd) {
           parsedDate = strictDate(
             parseInt(ymd[1], 10),
             parseInt(ymd[2], 10),
@@ -3986,42 +4249,44 @@ function executeCSVImport() {
             parsedDate = strictDate(p2, p0, p1);
           }
         }
-
-        let finalAccountStr = accountStr;
-        if (!finalAccountStr && memo && suggestStmt) {
-          try {
-            suggestStmt.bind([memo]);
-            if (suggestStmt.step()) finalAccountStr = suggestStmt.get()[0];
-          } catch (e) {
-          } finally {
-            suggestStmt.reset();
-          }
+        if (!parsedDate) {
+          db.run('ROLLBACK;');
+          keepModalOpen = true;
+          alert(
+            `${i + 1}行目の日付形式が不正です: "${dateStr}"\nデータ破損を防ぐためインポートを中止しました。\n列の割り当てを見直して再実行できます。`,
+          );
+          return;
         }
+      }
 
-        let finalDateStr = '';
-        if (dateStr && !isNaN(parsedDate.getTime())) {
-          // タイムゾーンによる日付のズレを防ぐため、ローカル時間のまま手動で文字列化
-          const yyyy = parsedDate.getFullYear();
-          const mm = String(parsedDate.getMonth() + 1).padStart(2, '0');
-          const dd = String(parsedDate.getDate()).padStart(2, '0');
-          finalDateStr = `${yyyy}-${mm}-${dd} 00:00:00`;
-        } else {
-          if (dateStr.trim() !== '') {
-            db.run('ROLLBACK;');
-            alert(`Invalid date format detected at Row ${i + 1}: "${dateStr}".\nImport aborted to prevent data corruption.`);
-            return;
-          }
-          const today = new Date();
-          finalDateStr = `${getTodayString()} 00:00:00`;
+      let finalAccountStr = accountStr;
+      if (!finalAccountStr && memo && suggestStmt) {
+        try {
+          suggestStmt.bind([memo]);
+          if (suggestStmt.step()) finalAccountStr = suggestStmt.get()[0];
+        } catch (e) {
+        } finally {
+          suggestStmt.reset();
         }
+      }
 
-        if (insertStmt) {
-          try {
-            insertStmt.run([parentId, memo, amount, finalDateStr, finalAccountStr]);
-            successCount++;
-          } catch (e) {
-            console.warn(e);
-          }
+      let finalDateStr = '';
+      if (parsedDate) {
+        const yyyy = parsedDate.getFullYear();
+        const mm = String(parsedDate.getMonth() + 1).padStart(2, '0');
+        const dd = String(parsedDate.getDate()).padStart(2, '0');
+        finalDateStr = `${yyyy}-${mm}-${dd} 00:00:00`;
+      } else {
+        finalDateStr = `${getTodayString()} 00:00:00`;
+      }
+
+      if (insertStmt) {
+        try {
+          insertStmt.run([parentId, memo, amount, finalDateStr, finalAccountStr]);
+          successCount++;
+        } catch (e) {
+          console.warn(e);
+          skippedInsertCount++;
         }
       }
     }
@@ -4033,20 +4298,23 @@ function executeCSVImport() {
     db.run('COMMIT;');
     setDirty(true);
 
-    // インポートしたブロックは初期状態で折りたたんでおく（見やすさへの配慮）
     collapsedBlocks.add(parentId);
 
-    // インポートしたデータが見えなくなるのを防ぐため、フィルターを解除
     if (document.getElementById('period-filter')) {
       document.getElementById('period-filter').value = 'all';
     }
     window.currentActiveMonths = null;
     setActiveQuickPeriodButton(null);
 
-    // ✅ ブラウザの操作をブロックするアラートを廃止し、トースト通知に変更
+    const skipTotal = skippedAmountCount + skippedInsertCount;
+    const skipNote =
+      skipTotal > 0
+        ? `（スキップ ${skipTotal} 件: 金額不明 ${skippedAmountCount} / 登録失敗 ${skippedInsertCount}）`
+        : '';
     showToast(
-      `${successCount} 件のデータをインポートしました`,
+      `${successCount} 件のデータをインポートしました${skipNote}`,
       '<span class="text-green-400">✨</span>',
+      { duration: skipTotal > 0 ? 6000 : 3000 },
     );
   } catch (err) {
     db.run('ROLLBACK;');
@@ -4055,6 +4323,7 @@ function executeCSVImport() {
   } finally {
     if (suggestStmt) suggestStmt.free();
     if (insertStmt) insertStmt.free();
+    if (!keepModalOpen) closeCSVModal();
   }
   renderData();
 }
@@ -4085,34 +4354,57 @@ GrindMoneyがインポートで必要とするデータは以下の4つです：
 }
 
 // 8.5 データ一覧を Markdown 形式でコピーする機能
+function escapeMarkdown(text) {
+  return String(text)
+    .replace(/[\r\n]+/g, ' ')
+    // Inline-significant characters only (memo never starts a line, so -, +, #, . are safe)
+    .replace(/([\\`*_\[\]<>|~])/g, '\\$1');
+}
+
 function copyAsMarkdown() {
   if (!db) return;
-  // 全データを日付の降順で取得
-  const res = db.exec(
-    'SELECT created_at, account, memo, amount FROM records WHERE parent_id IS NOT NULL ORDER BY created_at DESC',
-  );
-  if (res.length === 0) {
-    alert('コピーするデータがありません。');
+  // Same period filter as the on-screen totals, newest first
+  const { whereClause, params } = getPeriodWhereClause();
+  let rows = [];
+  let stmt;
+  try {
+    stmt = db.prepare(
+      `SELECT created_at, account, memo, amount FROM records WHERE parent_id IS NOT NULL${whereClause} ORDER BY created_at DESC`,
+    );
+    stmt.bind(params);
+    while (stmt.step()) rows.push(stmt.get());
+  } finally {
+    if (stmt) stmt.free();
+  }
+  if (rows.length === 0) {
+    alert('表示中の期間にコピーするデータがありません。');
     return;
   }
 
   let markdown = '## 出力データ (Markdown)\n\n';
-  res[0].values.forEach((row) => {
+  rows.forEach((row) => {
     const date = row[0] ? row[0].split(' ')[0] : '日付なし';
-    const account = row[1] || '未分類';
-    const memo = row[2] || '名称未設定';
+    const account = escapeMarkdown(row[1] || '未分類');
+    const memo = escapeMarkdown(row[2] || '名称未設定');
     const amountStr =
       row[3] !== null ? jpyFormatter.format(parseInt(row[3], 10)) + '円' : '金額未定';
 
-    markdown += `- **${date}** [${account}] ${memo} : **${amountStr}**\n`;
+    markdown += `- **${date}** \\[${account}\\] ${memo} : **${amountStr}**\n`;
   });
 
+  if (!navigator.clipboard || !navigator.clipboard.writeText) {
+    showToast('この環境ではクリップボードにコピーできません', '<span class="text-orange-400">⚠️</span>');
+    return;
+  }
   navigator.clipboard
     .writeText(markdown)
     .then(() => {
-      showToast('データを Markdown でコピーしました', '📋');
+      showToast(`${rows.length} 件を Markdown でコピーしました`, '📋');
     })
-    .catch((err) => console.error('コピーに失敗しました', err));
+    .catch((err) => {
+      console.error('コピーに失敗しました', err);
+      showToast('コピーに失敗しました', '<span class="text-red-400">❌</span>');
+    });
 }
 
 // 9. PWAインストールプロンプトの制御
@@ -4360,52 +4652,48 @@ function getFilteredCommands(query) {
           title: `= ${jpyFormatter.format(calcResult)} <span class="text-xs text-slate-400 ml-2">(Enterで適用またはコピー)</span>`,
           action: () => {
             const resultStr = calcResult.toString();
-            navigator.clipboard.writeText(resultStr);
+            const target = prePaletteActiveElement;
 
-            // 🎯 Gold-Rank: パレットを開く直前が入力欄だった場合、直接代入する
-            if (prePaletteActiveElement) {
-              if (prePaletteActiveElement.hasAttribute('contenteditable')) {
-                prePaletteActiveElement.innerText = resultStr;
-                prePaletteActiveElement.focus();
+            // Only an amount field may receive the result; memo / date / block name are never overwritten
+            const isAmountField =
+              target &&
+              target.isConnected &&
+              target.tagName === 'INPUT' &&
+              (target.getAttribute('data-field') === 'amount' ||
+                target.classList.contains('item-amount'));
 
-                const range = document.createRange();
-                const sel = window.getSelection();
-                range.selectNodeContents(prePaletteActiveElement);
-                range.collapse(false);
-                sel.removeAllRanges();
-                sel.addRange(range);
-
-                updateRecord(
-                  prePaletteActiveElement.getAttribute('data-id'),
-                  prePaletteActiveElement.getAttribute('data-field'),
-                  resultStr,
-                  prePaletteActiveElement,
-                );
-                setDirty(true);
-                showToast(
-                  `${resultStr} を直接入力しました`,
-                  '<span class="text-green-400">✨</span>',
-                );
-                return;
-              } else if (
-                prePaletteActiveElement.tagName === 'INPUT' ||
-                prePaletteActiveElement.tagName === 'TEXTAREA'
-              ) {
-                prePaletteActiveElement.value = resultStr;
-                prePaletteActiveElement.focus();
-                setDirty(true);
-                prePaletteActiveElement.dispatchEvent(new Event('input', { bubbles: true }));
-                showToast(
-                  `${resultStr} を直接入力しました`,
-                  '<span class="text-green-400">✨</span>',
-                );
-                return;
-              }
+            if (isAmountField) {
+              target.value = resultStr;
+              target.focus();
+              // Existing rows are saved on blur (updateRecord); the add form is saved on submit
+              target.dispatchEvent(new Event('input', { bubbles: true }));
+              showToast(
+                `${resultStr} を金額欄に入力しました`,
+                '<span class="text-green-400">✨</span>',
+              );
+              return;
             }
 
-            showToast(
-              `${jpyFormatter.format(calcResult)} をコピーしました`,
-              '<span class="text-green-400">📋</span>',
+            if (!navigator.clipboard || !navigator.clipboard.writeText) {
+              showToast(
+                `= ${jpyFormatter.format(calcResult)}（コピーできない環境です）`,
+                '<span class="text-orange-400">⚠️</span>',
+              );
+              return;
+            }
+            navigator.clipboard.writeText(resultStr).then(
+              () => {
+                showToast(
+                  `${jpyFormatter.format(calcResult)} をコピーしました`,
+                  '<span class="text-green-400">📋</span>',
+                );
+              },
+              () => {
+                showToast(
+                  `= ${jpyFormatter.format(calcResult)}（コピーに失敗しました）`,
+                  '<span class="text-orange-400">⚠️</span>',
+                );
+              },
             );
           },
         });
@@ -4577,23 +4865,18 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 
 // --- マルチタブ起動によるデータ競合の防止 ---
-if (typeof BroadcastChannel !== 'undefined') {
+// Fallback for browsers without Web Locks (best effort; can race when tabs open simultaneously)
+if (
+  typeof BroadcastChannel !== 'undefined' &&
+  !(navigator.locks && typeof navigator.locks.request === 'function')
+) {
   const bc = new BroadcastChannel('grindmoney_app_channel');
-  let hasAlerted = false;
 
   bc.onmessage = (e) => {
     if (e.data === 'ping') {
-      if (!hasAlerted) bc.postMessage('pong'); // すでに開いているタブが応答する
+      if (!isSecondaryTab) bc.postMessage('pong'); // すでに開いているタブが応答する
     } else if (e.data === 'pong') {
-      // 自分が後から開いたタブだった場合
-      if (!hasAlerted) {
-        hasAlerted = true;
-        alert(
-          '⚠️ GrindMoneyは既に別のタブまたはウィンドウで開かれています。\n\nデータ競合（バックアップの巻き戻り）を防ぐため、このタブでの編集は行わないでください。',
-        );
-        document.body.style.opacity = '0.5';
-        document.body.style.pointerEvents = 'none';
-      }
+      markSecondaryTab(); // 自分が後から開いたタブだった場合
     }
   };
   bc.postMessage('ping');
@@ -4937,11 +5220,23 @@ function loadCustomDict() {
     try {
       const parsed = JSON.parse(savedDict);
       if (Array.isArray(parsed)) {
-        // 古い形式(文字列の配列)から新しい形式(オブジェクトの配列)へマイグレーション
-        if (parsed.length > 0 && typeof parsed[0] === 'string') {
-          customAccountDict = parsed.map((name) => ({ name, hidden: false }));
-        } else {
-          customAccountDict = parsed;
+        // Accept the legacy string form and the {name, hidden} form per element; drop anything else
+        const seen = new Set();
+        customAccountDict = [];
+        for (const entry of parsed) {
+          const rawName =
+            typeof entry === 'string'
+              ? entry
+              : entry && typeof entry === 'object' && typeof entry.name === 'string'
+                ? entry.name
+                : null;
+          const name = rawName === null ? '' : rawName.trim().slice(0, 100);
+          if (!name || seen.has(name)) continue;
+          seen.add(name);
+          customAccountDict.push({
+            name,
+            hidden: typeof entry === 'object' && entry.hidden === true,
+          });
         }
       } else {
         throw new Error('Invalid format'); // catchブロックに飛ばしてデフォルト値をセットさせる
@@ -5484,7 +5779,12 @@ function initEventDelegation() {
     }
     if (target.classList.contains('item-amount') && target.tagName === 'INPUT') {
       if(e.key === 'Enter' && e.isComposing){ e.preventDefault(); return false; }
-      else if(e.key === 'Tab' && !e.shiftKey){ e.preventDefault(); target.closest('form')?.requestSubmit(); }
+      else if(e.key === 'Tab' && !e.shiftKey){
+        if (target.value.trim() !== '') {
+          e.preventDefault();
+          target.closest('form')?.requestSubmit();
+        }
+      }
     }
   });
 
@@ -5500,9 +5800,21 @@ document.addEventListener('DOMContentLoaded', () => {
   initEventDelegation();
 });
 
+// Flush draft when the tab is hidden or closing
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden') {
+    void flushDraftNow();
+  }
+});
+window.addEventListener('pagehide', () => {
+  void flushDraftNow();
+});
+
 // Register Service Worker for PWA
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => {
+    const hadController = !!navigator.serviceWorker.controller;
+
     navigator.serviceWorker.register('./sw.js').then(
       (registration) => {
         console.log('ServiceWorker registration successful with scope: ', registration.scope);
@@ -5514,15 +5826,14 @@ if ('serviceWorker' in navigator) {
 
     let refreshing = false;
     navigator.serviceWorker.addEventListener('controllerchange', () => {
-      if (!refreshing) {
-        refreshing = true;
-        if (typeof showToast === 'function') {
-          const message = `アプリが最新版に更新されました。<a href="#" data-action="reloadPage" class="ml-2 font-bold underline cursor-pointer">リロードして適用</a>`;
-          showToast(message, '<span class="text-blue-400">✨</span>', {
-            duration: Infinity,
-            rawHtml: true,
-          });
-        }
+      if (!hadController || refreshing) return;
+      refreshing = true;
+      if (typeof showToast === 'function') {
+        const message = `アプリが最新版に更新されました。<a href="#" data-action="reloadPage" class="ml-2 font-bold underline cursor-pointer">リロードして適用</a>`;
+        showToast(message, '<span class="text-blue-400">✨</span>', {
+          duration: Infinity,
+          rawHtml: true,
+        });
       }
     });
   });

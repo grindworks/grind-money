@@ -14,7 +14,7 @@
     <meta charset="UTF-8" />
     <meta
       name="viewport"
-      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"
+      content="width=device-width, initial-scale=1.0, viewport-fit=cover"
     />
     <!-- Robots Meta Tag for Max Indexing -->
     <meta name="robots" content="index, follow, max-snippet:-1, max-image-preview:large, max-video-preview:-1" />
@@ -90,18 +90,10 @@
       }
     </script>
 
-    <!-- Content Security Policy (CSP) -->
+    <!-- Content Security Policy (CSP): self-only; wasm-unsafe-eval required for sql.js -->
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval' 'unsafe-eval' https://grindsite.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; connect-src 'self' https://grindsite.com ws://127.0.0.1:* ws://localhost:*; img-src 'self' data:; object-src 'none'; base-uri 'none';"
-    />
-
-    <!-- Google Fonts (Inter + Noto Sans JP) -->
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link
-      href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=Noto+Sans+JP:wght@300;400;500;700;800;900&display=swap"
-      rel="stylesheet"
+      content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; font-src 'self'; connect-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none';"
     />
 
     <link rel="stylesheet" href="styles.css" />
@@ -120,8 +112,6 @@
     <!-- iOS用 ホーム画面アイコン -->
     <link rel="apple-touch-icon" href="icon-192.png" />
 
-    <!-- Global Footer Script -->
-    <script src="../footer.js" defer></script>
   </head>
 
   <body
@@ -458,6 +448,7 @@
               <input
                 type="text"
                 id="toc-filter"
+                aria-label="目次を絞り込み"
                 placeholder="目次を絞り込み..."
                 class="w-full rounded-md border border-slate-200 bg-slate-100 py-1.5 pr-2 pl-7 text-xs text-slate-700 transition-colors outline-none focus:border-blue-600 focus:bg-white"
                 autocomplete="off"

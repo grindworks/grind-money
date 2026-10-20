@@ -3,7 +3,7 @@
 @custom-variant dark (&:where(.never-used));
 
 @theme {
-  --font-sans: "Inter", "Noto Sans JP", "Helvetica Neue", Arial, sans-serif;
+  --font-sans: "Hiragino Sans", "Hiragino Kaku Gothic ProN", "Noto Sans JP", "Helvetica Neue", Arial, sans-serif;
 
   /* アニメーション定義 */
   --animate-modal-in: modalIn 0.25s cubic-bezier(0.16, 1, 0.3, 1) forwards;
@@ -22,7 +22,6 @@
 /* 1. クラス名の抽出対象ファイルを明示的に指定 */
 @source "./index.html";
 @source "./main.js";
-@source "../footer.js";
 
 /* --- カスタムキーフレーム定義 --- */
 

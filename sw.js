@@ -1,5 +1,5 @@
 // 💡 アップデート時はここを v2, v3... と書き換えることで更新が発火します
-const CACHE_NAME = 'grindmoney-v20261013-1';
+const CACHE_NAME = 'grindmoney-v20261020-1';
 const urlsToCache = [
   './',
   './index.html',
@@ -8,6 +8,7 @@ const urlsToCache = [
   './icon-192.png',
   './icon-512.png',
   './manifest.json',
+  './offline.html',
   './assets/sql-wasm.js',
   './assets/sql-wasm.wasm',
 ];
@@ -65,24 +66,27 @@ self.addEventListener('fetch', (event) => {
           }
           return networkResponse;
         } catch (error) {
-          // ネットワークエラー（オフライン）で、キャッシュにもない場合のフォールバック
           if (
             event.request.mode === 'navigate' ||
             (event.request.headers.get('accept') &&
               event.request.headers.get('accept').includes('text/html'))
           ) {
-            return await cache.match('./index.html');
+            // The app itself works offline; offline.html is only the last resort
+            return (
+              (await cache.match('./index.html')) ||
+              (await cache.match('./offline.html')) ||
+              new Response('', { status: 503, statusText: 'Offline' })
+            );
           }
+          return new Response('', { status: 503, statusText: 'Offline' });
         }
       };
 
-      // Stale-While-Revalidate 戦略
+      // Stale-While-Revalidate
       if (cachedResponse) {
-        // キャッシュヒット。バックグラウンドで更新を試みる
-        fetchAndCache();
+        event.waitUntil(fetchAndCache());
         return cachedResponse;
       }
-      // キャッシュミス。ネットワークからの応答を待つ
       return await fetchAndCache();
     })(),
   );
