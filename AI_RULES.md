@@ -18,10 +18,10 @@
 
 - Look, top bar, shortcuts, toasts, dialogs, wording and languages follow shared §7 UI. Do not restate them here; add only what differs.
 - Product-specific top-bar controls: the account dictionary selector, placed before the file password field.
+- UI language: Japanese only, for Japanese users. Strings stay inline in `index.html` and `main.js`; money has no `lang/` folder or `i18n.js`, and no language choice.
 
 ## 4. Known gaps against shared §7
 
-- UI language is Japanese only and the strings are inline in `index.html` and `main.js`. Move them to `lang/ja.js` and `lang/en.js` with the shared `i18n.js`, then add the language choice.
 - The Tailwind version is a `^` range in `package.json`, not pinned, and `build.sh` runs `npx tailwindcss` instead of the pinned binary.
 - Japanese comments in `main.js`, `index.html`, `input.css`, `sw.js` and `.gitignore`.
 - Japanese `console.*` messages in `main.js` (about 13 lines). Japanese text in thrown `Error` messages is UI text and stays until it moves to `lang/`.
