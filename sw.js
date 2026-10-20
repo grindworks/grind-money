@@ -1,5 +1,5 @@
 // Bump the version on every release; the new worker waits until the page asks for it (SKIP_WAITING)
-const CACHE_NAME = 'grindmoney-v20261020-3';
+const CACHE_NAME = 'grindmoney-v20261020-4';
 const urlsToCache = [
   './',
   './index.html',

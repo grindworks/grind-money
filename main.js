@@ -204,10 +204,10 @@ function openDB() {
 // Multi-tab guard: only the primary tab may read, write or delete the shared draft
 let isSecondaryTab = false;
 
-function markSecondaryTab() {
+async function markSecondaryTab() {
   if (isSecondaryTab) return;
   isSecondaryTab = true;
-  alert(
+  await appAlert(
     '⚠️ GrindMoneyは既に別のタブまたはウィンドウで開かれています。\n\nデータ競合（バックアップの巻き戻り）を防ぐため、このタブでは編集できません。\n元のタブを閉じてから再読み込みしてください。',
   );
   document.body.style.opacity = '0.5';
@@ -455,6 +455,170 @@ function requestPasswordPrompt(message) {
     btnSubmit.addEventListener('click', onSubmit);
     btnCancel.addEventListener('click', onCancel);
     input.addEventListener('keydown', onKeyDown);
+  });
+}
+
+// Shared dialog API: appAlert, appConfirm and appPrompt return Promises (native alert/confirm/prompt are not used)
+function requestTextPrompt(message, defaultValue = '') {
+  return new Promise((resolve) => {
+    window.isSystemModalOpen = true;
+    const modal = document.getElementById('text-prompt-modal');
+    const msgEl = document.getElementById('text-prompt-message');
+    const input = document.getElementById('text-prompt-input');
+    const btnSubmit = document.getElementById('text-prompt-submit');
+    const btnCancel = document.getElementById('text-prompt-cancel');
+    const previousFocus = document.activeElement;
+
+    msgEl.textContent = message;
+    input.value = defaultValue;
+    modal.classList.remove('hidden');
+    modal.classList.add('flex');
+    setAppInert(true);
+    setTimeout(() => {
+      input.focus();
+      input.select();
+    }, 50);
+
+    const cleanup = () => {
+      modal.classList.add('hidden');
+      modal.classList.remove('flex');
+      if (!document.querySelector('.flex[role="dialog"]')) {
+        window.isSystemModalOpen = false;
+        document.body.style.overflow = '';
+        setAppInert(false);
+      }
+      btnSubmit.removeEventListener('click', onSubmit);
+      btnCancel.removeEventListener('click', onCancel);
+      input.removeEventListener('keydown', onKeyDown);
+      if (previousFocus && previousFocus.focus) previousFocus.focus({ preventScroll: true });
+    };
+    const onSubmit = () => {
+      cleanup();
+      resolve(input.value);
+    };
+    const onCancel = () => {
+      cleanup();
+      resolve(null);
+    };
+    const onKeyDown = (e) => {
+      if (e.isComposing || (e.key !== 'Enter' && e.key !== 'Escape')) return;
+      e.preventDefault();
+      e.stopPropagation();
+      if (e.key === 'Enter') onSubmit();
+      else onCancel();
+    };
+
+    btnSubmit.addEventListener('click', onSubmit);
+    btnCancel.addEventListener('click', onCancel);
+    input.addEventListener('keydown', onKeyDown);
+  });
+}
+
+function appPrompt(message, defaultValue = '', { type = 'text' } = {}) {
+  return type === 'password'
+    ? requestPasswordPrompt(message)
+    : requestTextPrompt(message, defaultValue);
+}
+
+function appAlert(message, title = '通知') {
+  return new Promise((resolve) => {
+    window.isSystemModalOpen = true;
+    document.body.style.overflow = 'hidden';
+
+    const modal = document.getElementById('custom-alert-modal');
+    document.getElementById('custom-alert-title').textContent = title;
+    const escapedMessage = escapeHtml(String(message)).replace(/\n/g, '<br>');
+    document.getElementById('custom-alert-message').innerHTML = escapedMessage;
+
+    modal.classList.remove('hidden');
+    modal.classList.add('flex');
+
+    const okBtn = document.getElementById('custom-alert-ok-btn');
+
+    const handleOk = () => {
+      cleanup();
+      resolve();
+    };
+
+    const handleKeydown = (e) => {
+      if (e.key === 'Enter' || e.key === 'Escape') {
+        e.preventDefault();
+        e.stopPropagation();
+        handleOk();
+      }
+    };
+
+    const cleanup = () => {
+      modal.classList.add('hidden');
+      modal.classList.remove('flex');
+      if (!document.querySelector('.flex[role="dialog"]')) {
+        window.isSystemModalOpen = false;
+        document.body.style.overflow = '';
+      }
+      okBtn.removeEventListener('click', handleOk);
+      document.removeEventListener('keydown', handleKeydown, true);
+    };
+
+    okBtn.addEventListener('click', handleOk);
+    document.addEventListener('keydown', handleKeydown, true);
+    setTimeout(() => okBtn.focus(), 10);
+  });
+}
+
+function appConfirm(message, title = '確認') {
+  return new Promise((resolve) => {
+    window.isSystemModalOpen = true;
+    document.body.style.overflow = 'hidden';
+
+    const modal = document.getElementById('custom-confirm-modal');
+    document.getElementById('custom-confirm-title').textContent = title;
+    const escapedMessage = escapeHtml(String(message)).replace(/\n/g, '<br>');
+    document.getElementById('custom-confirm-message').innerHTML = escapedMessage;
+
+    modal.classList.remove('hidden');
+    modal.classList.add('flex');
+
+    const okBtn = document.getElementById('custom-confirm-ok-btn');
+    const cancelBtn = document.getElementById('custom-confirm-cancel-btn');
+
+    const handleOk = () => {
+      cleanup();
+      resolve(true);
+    };
+    const handleCancel = () => {
+      cleanup();
+      resolve(false);
+    };
+
+    const handleKeydown = (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        e.stopPropagation();
+        if (document.activeElement === okBtn) handleOk();
+        else handleCancel();
+      } else if (e.key === 'Escape') {
+        e.preventDefault();
+        e.stopPropagation();
+        handleCancel();
+      }
+    };
+
+    const cleanup = () => {
+      modal.classList.add('hidden');
+      modal.classList.remove('flex');
+      if (!document.querySelector('.flex[role="dialog"]')) {
+        window.isSystemModalOpen = false;
+        document.body.style.overflow = '';
+      }
+      okBtn.removeEventListener('click', handleOk);
+      cancelBtn.removeEventListener('click', handleCancel);
+      document.removeEventListener('keydown', handleKeydown, true);
+    };
+
+    okBtn.addEventListener('click', handleOk);
+    cancelBtn.addEventListener('click', handleCancel);
+    document.addEventListener('keydown', handleKeydown, true);
+    setTimeout(() => cancelBtn.focus(), 10);
   });
 }
 
@@ -716,9 +880,9 @@ async function initSQLite() {
     const draft = await loadDraft();
     if (draft) {
       if (
-        confirm(
+        (await appConfirm(
           '⚠️ 前回終了時の未保存データ（バックアップ）が見つかりました。\n\n復元しますか？\n（「キャンセル」を押すと次の確認で破棄できます）',
-        )
+        ))
       ) {
         let Uints = draft;
         const magic = Uints.slice(0, 8);
@@ -741,7 +905,7 @@ async function initSQLite() {
                 'バックアップデータは暗号化されています。解除パスワードを入力してください:',
               );
               if (promptPw === null) {
-                alert('起動をキャンセルしました。リロードしてやり直してください。');
+                await appAlert('起動をキャンセルしました。リロードしてやり直してください。');
                 document.body.innerHTML =
                   "<h1 style='text-align:center; margin-top:20vh;'>保護のため停止しました。<br>リロードしてください。</h1>";
                 return;
@@ -753,11 +917,11 @@ async function initSQLite() {
         }
         initialData = Uints;
       } else if (
-        confirm('バックアップを破棄しますか？\nこの操作は取り消せません。')
+        (await appConfirm('バックアップを破棄しますか？\nこの操作は取り消せません。'))
       ) {
         await clearDraft();
       } else {
-        alert(
+        await appAlert(
           'バックアップを残したまま起動します。\n次回起動時に再度確認します。\n※ このまま編集すると、新しい内容でバックアップが上書きされます。',
         );
       }
@@ -773,7 +937,7 @@ async function initSQLite() {
         showToast('未保存データを復元しました', '<span class="text-orange-400">↺</span>');
       } catch (dbError) {
         console.error('ドラフトの復元に失敗しました。データが破損しています。', dbError);
-        alert('⚠️ 前回の未保存データが破損しているため、復元を中止しました。');
+        await appAlert('⚠️ 前回の未保存データが破損しているため、復元を中止しました。');
         try {
           if (db) db.close();
         } catch (e) {}
@@ -860,7 +1024,7 @@ function handleLaunchFiles() {
       if (!launchParams.files || launchParams.files.length === 0) return;
 
       if (isDirty) {
-        if (!confirm('未保存のデータがあります。変更を破棄して別のファイルを開きますか？')) return;
+        if (!(await appConfirm('未保存のデータがあります。変更を破棄して別のファイルを開きますか？'))) return;
       }
       await processFileHandle(launchParams.files[0]);
     });
@@ -1021,12 +1185,12 @@ function evaluateMath(expr) {
   }
 }
 
-function addItem(parentId, memo, amount, dateStr, accountStr) {
+async function addItem(parentId, memo, amount, dateStr, accountStr) {
   const safeMemo = (memo || '').trim();
   if (!safeMemo || amount === '' || amount === null) return;
 
   // 登録に失敗した場合は入力中の内容を残すため、記憶・フィルター解除・再描画を行わない
-  if (!insertRecord(parentId, safeMemo, amount, dateStr, accountStr)) return;
+  if (!(await insertRecord(parentId, safeMemo, amount, dateStr, accountStr))) return;
 
   if (parentId) {
     if (dateStr) lastUsedDates[parentId] = dateStr;
@@ -1082,11 +1246,11 @@ function showAllPeriodsIfOutsideFilter(dateStr) {
   );
 }
 
-function insertRecord(parentId, memo, amountExpr, dateStr = null, accountStr = null) {
+async function insertRecord(parentId, memo, amountExpr, dateStr = null, accountStr = null) {
   const parsedAmount = evaluateMath(amountExpr);
   // 金額が入力されたのに数式のパースに失敗した場合（不正な文字列など）は弾く
   if (amountExpr !== null && amountExpr !== '' && parsedAmount === null) {
-    alert('金額の入力、または数式が正しくありません。');
+    await appAlert('金額の入力、または数式が正しくありません。');
     return false;
   }
 
@@ -1189,7 +1353,7 @@ function autoSuggestAccount(memoInput) {
 }
 
 // --- 決済（回収・支払）行の自動生成ロジック ---
-window.createCollectionRecord = function (id) {
+window.createCollectionRecord = async function (id) {
   if (!db) return;
   let stmt;
   let insertStmt = null;
@@ -1208,9 +1372,9 @@ window.createCollectionRecord = function (id) {
       const accountName = account || '雑費';
       if (
         !getFreewayCode(accountName) &&
-        !confirm(
+        !(await appConfirm(
           `⚠️ 科目「${accountName}」は科目コード表にないため、収支の向きを判定できません。\n\n金額の符号から「${isIncome ? '入金（回収）' : '支払'}」として決済行を作成します。よろしいですか？`,
-        )
+        ))
       ) {
         return;
       }
@@ -1275,7 +1439,7 @@ window.createCollectionRecord = function (id) {
 };
 
 // --- インプレース編集機能 ---
-function updateRecord(id, field, newValue, element) {
+async function updateRecord(id, field, newValue, element) {
   if (!db) return;
 
   // ホワイトリストによるSQLインジェクション対策
@@ -1293,7 +1457,7 @@ function updateRecord(id, field, newValue, element) {
       // 表示時のカンマを除去してから数式評価
       val = evaluateMath(val);
       if (val === null) {
-        alert('金額の入力、または数式が正しくありません。');
+        await appAlert('金額の入力、または数式が正しくありません。');
         if (element) {
           // 拒否した文字列が画面に残らないよう、DBの現在値に表示を戻す
           let revertStmt;
@@ -1337,7 +1501,7 @@ function updateRecord(id, field, newValue, element) {
         dateObj.getMonth() !== m - 1 ||
         dateObj.getDate() !== d
       ) {
-        alert('存在しない日付です。カレンダーを確認してください。');
+        await appAlert('存在しない日付です。カレンダーを確認してください。');
         renderData();
         return;
       }
@@ -1356,14 +1520,14 @@ function updateRecord(id, field, newValue, element) {
           dateObj.getMonth() !== m - 1 ||
           dateObj.getDate() !== d
         ) {
-          alert('存在しない日付です。カレンダーを確認してください。');
+          await appAlert('存在しない日付です。カレンダーを確認してください。');
           renderData();
           return;
         }
 
         val = `${y}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')} 00:00:00`;
       } else {
-        alert('日付の形式が正しくありません。(例: 12/31 または 2025-12-31)');
+        await appAlert('日付の形式が正しくありません。(例: 12/31 または 2025-12-31)');
         renderData();
         return;
       }
@@ -1969,9 +2133,9 @@ function updateFiscalYearButton() {
   }
 }
 
-function changeFiscalMonth() {
+async function changeFiscalMonth() {
   const current = getDbSetting('fiscalMonth', '4');
-  const input = prompt('年度の開始月（1〜12）を入力してください:', current);
+  const input = (await appPrompt('年度の開始月（1〜12）を入力してください:', current));
   if (input !== null) {
     const halfInput = input.replace(/[０-９]/g, (s) =>
       String.fromCharCode(s.charCodeAt(0) - 0xfee0),
@@ -1993,7 +2157,7 @@ function changeFiscalMonth() {
   renderData();
       }
     } else {
-      alert('1から12の数字を入力してください。');
+      await appAlert('1から12の数字を入力してください。');
     }
   }
 }
@@ -2753,7 +2917,7 @@ function updateOrCreateBlockElement(block, existingEl = null) {
 }
 
 // --- テンプレート（1Shot生成）機能 ---
-function saveTemplate(blockId) {
+async function saveTemplate(blockId) {
   if (!db) return;
 
   // ブロックのタイトルを取得
@@ -2791,10 +2955,10 @@ function saveTemplate(blockId) {
     if (itemsStmt) itemsStmt.free();
   }
 
-  let tplName = prompt(
+  let tplName = (await appPrompt(
     'このブロックをテンプレートとして保存します。\n呼び出し用の名前を入力してください:',
     blockMemo + ' (雛形)',
-  );
+  ));
   if (!tplName) return;
 
   let stmt;
@@ -2805,12 +2969,12 @@ function saveTemplate(blockId) {
     if (stmt) stmt.free();
   }
   setDirty(true);
-  alert(
+  await appAlert(
     `✅ テンプレート「${tplName}」を保存しました。\nコマンドパレット(Cmd+K)からいつでも一発で呼び出せます。`,
   );
 }
 
-function insertTemplate(templateId) {
+async function insertTemplate(templateId) {
   if (!db) return;
 
   let tplName = '';
@@ -2831,13 +2995,13 @@ function insertTemplate(templateId) {
   try {
     tplData = JSON.parse(rawData || '[]');
   } catch (e) {
-    alert('テンプレートデータの読み込みに失敗しました。データが破損している可能性があります。');
+    await appAlert('テンプレートデータの読み込みに失敗しました。データが破損している可能性があります。');
     return;
   }
 
   // 万が一パース結果がオブジェクト等で配列でない場合のクラッシュ(TypeError)を防止
   if (!Array.isArray(tplData)) {
-    alert('テンプレートデータが破損しています（配列ではありません）。');
+    await appAlert('テンプレートデータが破損しています（配列ではありません）。');
     return;
   }
 
@@ -2845,7 +3009,7 @@ function insertTemplate(templateId) {
   const items = [];
   for (const item of tplData) {
     if (!item || typeof item !== 'object') {
-      alert('テンプレートデータが破損しています（不正な明細が含まれています）。');
+      await appAlert('テンプレートデータが破損しています（不正な明細が含まれています）。');
       return;
     }
     const memo = typeof item.memo === 'string' ? item.memo : '';
@@ -2857,7 +3021,7 @@ function insertTemplate(templateId) {
     } else if (typeof item.amount === 'string' && /^-?\d+$/.test(item.amount.trim())) {
       amount = parseInt(item.amount.trim(), 10);
     } else if (item.amount !== '' && item.amount !== undefined && item.amount !== null) {
-      alert('テンプレートデータが破損しています（金額が数値ではありません）。');
+      await appAlert('テンプレートデータが破損しています（金額が数値ではありません）。');
       return;
     }
     items.push({ memo, amount, account });
@@ -2883,7 +3047,7 @@ function insertTemplate(templateId) {
   } catch (e) {
     db.run('ROLLBACK;');
     console.error('Template insert failed', e);
-    alert('テンプレートの展開に失敗しました。');
+    await appAlert('テンプレートの展開に失敗しました。');
     return;
   } finally {
     if (insertStmt) insertStmt.free();
@@ -2897,11 +3061,11 @@ function insertTemplate(templateId) {
 }
 
 // 3.5 データの削除（DELETE文の実行）
-function deleteRecord(id, isBlock = false) {
+async function deleteRecord(id, isBlock = false) {
   const msg = isBlock 
     ? '⚠️ 警告 ⚠️\nこのブロックを削除しますか？\n（中に含まれるすべての明細データも完全に削除されます）'
     : 'この記録を削除しますか？';
-  if (!confirm(msg)) return;
+  if (!(await appConfirm(msg))) return;
   let stmt;
   try {
     stmt = db.prepare('DELETE FROM records WHERE id = ? OR parent_id = ?');
@@ -2920,12 +3084,12 @@ function deleteRecord(id, isBlock = false) {
 }
 
 // 手動でブロック内の明細を日付順に並べ替える
-function sortBlockByDate(blockId) {
+async function sortBlockByDate(blockId) {
   if (!db) return;
   if (
-    !confirm(
+    !(await appConfirm(
       'このブロック内の明細を「日付が古い順」に並べ替えますか？\n（同じ日付の場合は入力した順になります）',
-    )
+    ))
   )
     return;
 
@@ -3062,11 +3226,11 @@ async function saveGrindFile(isSaveAs = false) {
     // 【セキュリティ修正 1】: パスワードを空にして暗号化を解除しようとした場合の警告
     if (lastSavedPasswordHash !== '' && !hasPasswordSet) {
       if (
-        !confirm(
+        !(await appConfirm(
           '⚠️ 警告 ⚠️\nパスワードが解除されています。\nこのまま保存すると、ファイルの暗号化が解除され「平文」で保存されます。\n\n本当に暗号化を解除して保存しますか？',
-        )
+        ))
       ) {
-        alert('保存を中断しました。もう一度パスワードを設定してください。');
+        await appAlert('保存を中断しました。もう一度パスワードを設定してください。');
         isSaving = false;
         return;
       }
@@ -3083,7 +3247,7 @@ async function saveGrindFile(isSaveAs = false) {
       } // キャンセル
       const confirmHash = await getPasswordHash(confirmPw);
       if (confirmHash !== currentHash) {
-        alert('❌ パスワードが一致しません。保存を中止しました。');
+        await appAlert('❌ パスワードが一致しません。保存を中止しました。');
         isSaving = false;
         return;
       }
@@ -3178,7 +3342,7 @@ async function saveGrindFile(isSaveAs = false) {
           }
         }
       } catch (e) {
-        alert(
+        await appAlert(
           'ファイルの書き込み権限が取得できませんでした。時間経過によりブラウザが権限を取り消した可能性があります。\n\n「複製して保存する (Save As)」をお試しください。',
         );
         return; // 権限がなければクラッシュを防ぐため中断
@@ -3234,7 +3398,7 @@ async function saveGrindFile(isSaveAs = false) {
 // 5. 【核心部】 ファイル読み込みの共通処理
 async function processFileHandle(handle, isDummy = false) {
   if (!SQL) {
-    alert('データベースエンジンを起動中です。数秒待ってから再度お試しください。');
+    await appAlert('データベースエンジンを起動中です。数秒待ってから再度お試しください。');
     return;
   }
 
@@ -3253,7 +3417,7 @@ async function processFileHandle(handle, isDummy = false) {
 
     // 巨大ファイルによるOOMクラッシュを防止
     if (file.size > 50 * 1024 * 1024) {
-      alert('ファイルサイズが大きすぎます（50MB上限）。不正なファイルの可能性があります。');
+      await appAlert('ファイルサイズが大きすぎます（50MB上限）。不正なファイルの可能性があります。');
       return;
     }
 
@@ -3350,14 +3514,14 @@ async function processFileHandle(handle, isDummy = false) {
     console.error('processFileHandle error:', err);
     // 読み込み前のファイルを開いたままなので、パスワード状態も元に戻す
     if (!committed) restorePasswordState();
-    alert('ファイルの読み込みに失敗しました。');
+    await appAlert('ファイルの読み込みに失敗しました。');
   }
 }
 
 // 5.1 「開く」ボタンから File System Access API を使った読み込み
 async function loadGrindFile() {
   if (isDirty) {
-    if (!confirm('未保存のデータがあります。変更を破棄して別のファイルを開きますか？')) return;
+    if (!(await appConfirm('未保存のデータがあります。変更を破棄して別のファイルを開きますか？'))) return;
   }
 
   if ('showOpenFilePicker' in window) {
@@ -3443,7 +3607,7 @@ function executeExport() {
 }
 
 // 6. CSVエクスポート
-function exportCSV(format = 'yayoi') {
+async function exportCSV(format = 'yayoi') {
   if (!db) return;
 
   const filterVal = document.getElementById('period-filter')?.value || 'all';
@@ -3487,7 +3651,7 @@ function exportCSV(format = 'yayoi') {
   }
 
   if (values.length === 0) {
-    alert('エクスポートするデータがありません。');
+    await appAlert('エクスポートするデータがありません。');
     return;
   }
 
@@ -3535,7 +3699,7 @@ function exportCSV(format = 'yayoi') {
   }
 
   if (rowsToExport.length === 0) {
-    alert(
+    await appAlert(
       exclusionNotes.length > 0
         ? `出力できる仕訳がありません。（${exclusionNotes.join('。')}）`
         : 'エクスポートするデータがありません。',
@@ -3556,9 +3720,9 @@ function exportCSV(format = 'yayoi') {
     const notes = ['・発生行のプラスの金額は「収入」として仕訳されます（費用の場合は貸借が逆になります）。'];
     if (format === 'freeway') notes.push('・フリーウェイ形式では科目コードが「000」として出力されます。');
     if (
-      !confirm(
+      !(await appConfirm(
         `⚠️ 次の科目は科目コード表にありません。\n\n${list}\n\n${notes.join('\n')}\n\nこのまま出力しますか？`,
-      )
+      ))
     ) {
       return;
     }
@@ -3839,13 +4003,13 @@ function getCollectionSources() {
 }
 
 // 7. CSVインポート
-function importCSV(event) {
+async function importCSV(event) {
   const file = event.target.files[0];
   if (!file) return;
 
   // 5MB (5 * 1024 * 1024 bytes) を超える場合は警告してクラッシュを防ぐ
   if (file.size > 5242880) {
-    alert(
+    await appAlert(
       'ファイルサイズが大きすぎます（5MB上限）。ブラウザがクラッシュするのを防ぐため読み込みを中止しました。',
     );
     event.target.value = '';
@@ -3859,8 +4023,8 @@ function importCSV(event) {
     showCSVModal();
     inputEl.value = '';
   };
-  reader.onerror = function () {
-    alert('ファイルの読み込みに失敗しました。ファイルが破損しているか、メモリが不足しています。');
+  reader.onerror = async function () {
+    await appAlert('ファイルの読み込みに失敗しました。ファイルが破損しているか、メモリが不足しています。');
     inputEl.value = '';
   };
   reader.readAsArrayBuffer(file); // ArrayBufferとして読み込む
@@ -4113,7 +4277,7 @@ function closeCSVModal() {
   pendingCSVBuffer = null;
 }
 
-function executeCSVImport() {
+async function executeCSVImport() {
   const mapDate = parseInt(document.getElementById('map-date').value, 10);
   const mapAccount = parseInt(document.getElementById('map-account').value, 10);
   const mapMemo = parseInt(document.getElementById('map-memo').value, 10);
@@ -4121,7 +4285,7 @@ function executeCSVImport() {
   const skipRows = Math.max(0, parseInt(document.getElementById('csv-skip-rows').value, 10) || 0);
 
   if (mapMemo === -1 || mapAmount === -1) {
-    alert('「メモ」と「金額」の列は必須です。');
+    await appAlert('「メモ」と「金額」の列は必須です。');
     return;
   }
 
@@ -4129,7 +4293,7 @@ function executeCSVImport() {
   const selectedCols = [mapDate, mapAccount, mapMemo, mapAmount].filter((val) => val !== -1);
   const uniqueCols = new Set(selectedCols);
   if (selectedCols.length !== uniqueCols.size) {
-    alert('同じ列が複数の項目に割り当てられています。\nマッピング（列の選択）を見直してください。');
+    await appAlert('同じ列が複数の項目に割り当てられています。\nマッピング（列の選択）を見直してください。');
     return;
   }
 
@@ -4155,7 +4319,7 @@ function executeCSVImport() {
     const MAX_IMPORT_ROWS = 3000;
     const rowsToProcess = dataToImport.length - startIndex;
     if (rowsToProcess > MAX_IMPORT_ROWS) {
-      alert(
+      await appAlert(
         `⚠️ データが多すぎます（${rowsToProcess}行）。\nブラウザのフリーズを防ぐため、最初の${MAX_IMPORT_ROWS}行のみをインポートします。\n残りのデータはCSVを分割してインポートしてください。`,
       );
     }
@@ -4254,7 +4418,7 @@ function executeCSVImport() {
         if (!parsedDate) {
           db.run('ROLLBACK;');
           keepModalOpen = true;
-          alert(
+          await appAlert(
             `${i + 1}行目の日付形式が不正です: "${dateStr}"\nデータ破損を防ぐためインポートを中止しました。\n列の割り当てを見直して再実行できます。`,
           );
           return;
@@ -4320,7 +4484,7 @@ function executeCSVImport() {
     );
   } catch (err) {
     db.run('ROLLBACK;');
-    alert('インポート中にエラーが発生しました。');
+    await appAlert('インポート中にエラーが発生しました。');
     console.error(err);
   } finally {
     if (suggestStmt) suggestStmt.free();
@@ -4363,7 +4527,7 @@ function escapeMarkdown(text) {
     .replace(/([\\`*_\[\]<>|~])/g, '\\$1');
 }
 
-function copyAsMarkdown() {
+async function copyAsMarkdown() {
   if (!db) return;
   // Same period filter as the on-screen totals, newest first
   const { whereClause, params } = getPeriodWhereClause();
@@ -4379,7 +4543,7 @@ function copyAsMarkdown() {
     if (stmt) stmt.free();
   }
   if (rows.length === 0) {
-    alert('表示中の期間にコピーするデータがありません。');
+    await appAlert('表示中の期間にコピーするデータがありません。');
     return;
   }
 
@@ -4576,7 +4740,7 @@ function getPasswordCommands() {
         );
         if (pw === null) return;
         if (pw === '') {
-          alert('パスワードが空です。設定を中止しました。');
+          await appAlert('パスワードが空です。設定を中止しました。');
           return;
         }
         await setMasterPassword(pw);
@@ -4590,7 +4754,7 @@ function getPasswordCommands() {
       icon: '<span class="text-base leading-none">🔓</span>',
       title: 'パスワードを解除する (Password)',
       action: async () => {
-        if (confirm('パスワード設定を解除しますか？\n（次回保存時にファイルが暗号化されなくなります）')) {
+        if ((await appConfirm('パスワード設定を解除しますか？\n（次回保存時にファイルが暗号化されなくなります）'))) {
           await setMasterPassword('');
           showToast('パスワードを解除しました', '🔓');
         }
@@ -4620,8 +4784,8 @@ function getDynamicCommands() {
             icon: '<svg class="w-5 h-5 text-red-400"><use href="#icon-trash"></use></svg>',
             title: `<span class="text-slate-400">[削除] ${escapeHtml(row[1])}</span>`,
             keepOpen: true, // パレットを閉じない設定
-            action: () => {
-              if (confirm(`テンプレート「${row[1]}」を削除しますか？`)) {
+            action: async () => {
+              if ((await appConfirm(`テンプレート「${row[1]}」を削除しますか？`))) {
                 db.run('DELETE FROM templates WHERE id = ?', [row[0]]);
                 setDirty(true);
                 // パレットを閉じずにリストだけを再描画して更新を反映
@@ -4908,7 +5072,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const btnClearPw = document.getElementById('btn-clear-password');
   if (btnClearPw) {
     btnClearPw.addEventListener('click', async () => {
-      if (confirm('パスワード設定を解除しますか？\n（次回保存時にファイルが暗号化されなくなります）')) {
+      if ((await appConfirm('パスワード設定を解除しますか？\n（次回保存時にファイルが暗号化されなくなります）'))) {
         await setMasterPassword('');
       }
     });
@@ -5400,8 +5564,8 @@ function moveCustomDictItem(index, direction) {
   renderCustomDictEditor();
 }
 
-function deleteCustomDictItem(index) {
-  if (confirm(`「${customAccountDict[index].name}」を辞書から完全に削除しますか？`)) {
+async function deleteCustomDictItem(index) {
+  if ((await appConfirm(`「${customAccountDict[index].name}」を辞書から完全に削除しますか？`))) {
     customAccountDict.splice(index, 1);
     renderCustomDictEditor();
   }
@@ -5469,7 +5633,7 @@ function closeTagModal() {
 }
 
 if (!window.isSecureContext) {
-  alert(
+  appAlert(
     '⚠️ セキュリティ警告 ⚠️\n\n現在のアクセス環境 (HTTP) では、ブラウザのセキュリティ制限によりファイルの読み書きや暗号化機能がブロックされます。\n\nGrindMoneyを正常に動作させるには、必ず「HTTPS」環境にアップロードするか、「localhost」で実行してください。',
   );
   showToast(
@@ -5602,7 +5766,7 @@ document.addEventListener('drop', async (e) => {
     lowerName.endsWith('.sqlite')
   ) {
     if (isDirty) {
-      if (!confirm('未保存のデータがあります。変更を破棄して別のファイルを開きますか？')) return;
+      if (!(await appConfirm('未保存のデータがあります。変更を破棄して別のファイルを開きますか？'))) return;
     }
     if (handle && handle.kind === 'file') {
       await processFileHandle(handle);
@@ -5626,7 +5790,7 @@ document.addEventListener('drop', async (e) => {
       csvInput.dispatchEvent(new Event('change', { bubbles: true }));
     }
   } else {
-    alert(
+    await appAlert(
       'サポートされていないファイルです。.money、.grind または .csv 形式のファイルをドロップしてください。',
     );
   }
