@@ -234,19 +234,22 @@ function acquirePrimaryTabLock() {
   });
 }
 
+// Resolve true when the draft is stored; the tab that does not own the data stores nothing
 async function saveDraft(uints) {
-  if (isSecondaryTab) return;
+  if (isSecondaryTab) return true;
   try {
     const idb = await openDB();
     const tx = idb.transaction(STORE_NAME, 'readwrite');
     tx.objectStore(STORE_NAME).put(uints, 'latest_draft');
-    return new Promise((resolve, reject) => {
+    await new Promise((resolve, reject) => {
       tx.oncomplete = () => resolve();
       tx.onerror = () => reject(tx.error);
       tx.onabort = () => reject(tx.error);
     });
+    return true;
   } catch (e) {
     console.error('Draft save failed', e);
+    return false;
   }
 }
 
@@ -290,8 +293,7 @@ async function persistDraftSnapshot() {
     }
     if (!isDirty) return true;
     if (generation !== draftGeneration) return true;
-    await saveDraft(data);
-    return true;
+    return await saveDraft(data);
   } catch (e) {
     console.error('Draft save failed', e);
     return false;
