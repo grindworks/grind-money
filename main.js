@@ -277,22 +277,24 @@ async function clearDraft() {
 }
 
 async function persistDraftSnapshot() {
-  if (!isDirty || !db) return;
+  if (!isDirty || !db) return true;
   const generation = ++draftGeneration;
   try {
     if (lastSavedPasswordHash !== '' && currentMasterKey === null) {
       console.warn('Draft save aborted: Password removed from an encrypted session.');
-      return;
+      return false;
     }
     let data = db.export();
     if (currentMasterKey) {
       data = await encryptData(data, currentMasterKey);
     }
-    if (!isDirty) return;
-    if (generation !== draftGeneration) return;
+    if (!isDirty) return true;
+    if (generation !== draftGeneration) return true;
     await saveDraft(data);
+    return true;
   } catch (e) {
     console.error('Draft save failed', e);
+    return false;
   }
 }
 
@@ -342,9 +344,9 @@ function scheduleDraftSave() {
 
 async function flushDraftNow() {
   clearDraftTimers();
-  if (!isDirty || !db) return;
+  if (!isDirty || !db) return true;
   if (draftSaveInFlight) await draftSaveInFlight;
-  await persistDraftSnapshot();
+  return persistDraftSnapshot();
 }
 
 // Unsaved-state flag + UI badge + draft autosave scheduling
@@ -5810,31 +5812,69 @@ window.addEventListener('pagehide', () => {
   void flushDraftNow();
 });
 
-// Register Service Worker for PWA
+// Service Worker: an update waits until the user chooses to reload
+function showUpdateToast() {
+  if (document.getElementById('update-toast')) return;
+  const toast = document.createElement('div');
+  toast.id = 'update-toast';
+  toast.setAttribute('role', 'status');
+  toast.className =
+    'fixed inset-x-0 bottom-6 z-[9999] mx-auto flex w-max max-w-[90vw] items-center gap-3 rounded-full border border-slate-800/50 bg-slate-900/95 py-2 pr-2 pl-5 text-xs font-medium text-white shadow-xl backdrop-blur-sm';
+  const label = document.createElement('span');
+  label.textContent = '✨ 新しいバージョンがあります。';
+  const apply = document.createElement('button');
+  apply.type = 'button';
+  apply.className = 'rounded-full bg-white px-3 py-1.5 font-semibold text-slate-900 hover:bg-slate-200';
+  apply.textContent = '再読み込み';
+  apply.addEventListener('click', applyAppUpdate);
+  const later = document.createElement('button');
+  later.type = 'button';
+  later.className = 'rounded-full px-2 py-1 text-slate-400 hover:text-white';
+  later.setAttribute('aria-label', 'あとで');
+  later.textContent = '×';
+  later.addEventListener('click', () => toast.remove());
+  toast.append(label, apply, later);
+  document.body.appendChild(toast);
+}
+
+// Activate the waiting worker only after the draft is safe, then reload once it controls the page
+async function applyAppUpdate() {
+  if (isDirty && !(await flushDraftNow())) {
+    showToast('先にファイルを保存してから、再読み込みしてください。', '⚠️', { duration: 6000 });
+    return;
+  }
+  const registration = await navigator.serviceWorker.getRegistration();
+  if (registration && registration.waiting) {
+    navigator.serviceWorker.addEventListener(
+      'controllerchange',
+      () => {
+        isDirty = false;
+        location.reload();
+      },
+      { once: true },
+    );
+    registration.waiting.postMessage('SKIP_WAITING');
+  } else {
+    isDirty = false;
+    location.reload();
+  }
+}
+
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => {
-    const hadController = !!navigator.serviceWorker.controller;
-
     navigator.serviceWorker.register('./sw.js').then(
       (registration) => {
-        console.log('ServiceWorker registration successful with scope: ', registration.scope);
-      },
-      (err) => {
-        console.log('ServiceWorker registration failed: ', err);
-      }
-    );
-
-    let refreshing = false;
-    navigator.serviceWorker.addEventListener('controllerchange', () => {
-      if (!hadController || refreshing) return;
-      refreshing = true;
-      if (typeof showToast === 'function') {
-        const message = `アプリが最新版に更新されました。<a href="#" data-action="reloadPage" class="ml-2 font-bold underline cursor-pointer">リロードして適用</a>`;
-        showToast(message, '<span class="text-blue-400">✨</span>', {
-          duration: Infinity,
-          rawHtml: true,
+        // An update may have finished installing during an earlier visit
+        if (registration.waiting && navigator.serviceWorker.controller) showUpdateToast();
+        registration.addEventListener('updatefound', () => {
+          const worker = registration.installing;
+          worker.addEventListener('statechange', () => {
+            // Installed while an old worker controls the page: this is an update
+            if (worker.state === 'installed' && navigator.serviceWorker.controller) showUpdateToast();
+          });
         });
-      }
-    });
+      },
+      (err) => console.error('ServiceWorker registration failed:', err),
+    );
   });
 }
