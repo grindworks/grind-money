@@ -1,13 +1,15 @@
-# 個人データ・エクスポートファイル
+# Personal data and export files
 *.grind
 *.money
 *.sqlite
 *.csv
 
-# 開発用スクリプト・ファイル
+# Development scripts and files
 export_ai.md
 export_ai.sh
-build.sh
+
+# Tailwind standalone CLI binaries
+tailwindcss-*
 
 # OS generating files
 .DS_Store
