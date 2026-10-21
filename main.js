@@ -79,7 +79,7 @@ function normalizeAmountText(raw) {
   let normalized = String(raw).trim();
   // Map minus-like glyphs before fullwidth digit conversion (U+FF0D must not go through -0xFEE0)
   normalized = normalized.replace(MINUS_LIKE_RE, '-');
-  normalized = normalized.replace(/[０-９＋＊／．（）]/g, (s) =>
+  normalized = normalized.replace(/[０-９＋＊／．（），]/g, (s) =>
     String.fromCharCode(s.charCodeAt(0) - 0xfee0),
   );
   normalized = normalized.replace(/×/g, '*').replace(/÷/g, '/');
@@ -96,7 +96,7 @@ function normalizeAmountText(raw) {
   if (invalidGroup) return null;
 
   // Strip currency / whitespace before sign detection so "(¥1,500)" stays negative
-  normalized = normalized.replace(/[¥￥$円\s]/g, '');
+  normalized = normalized.replace(/[¥￥$円\s]/g, '').replace(/^\+/, '');
   if (/^\([\d,.]+\)$/.test(normalized)) {
     normalized = '-' + normalized.replace(/[()]/g, '');
   }
@@ -107,12 +107,16 @@ function normalizeAmountText(raw) {
 }
 
 function clearMigratedLocalStorageIfPresent() {
-  const keysToMigrate = ['customAccountDict', 'fiscalMonth', 'accountDict'];
-  for (const key of keysToMigrate) {
-    if (localStorage.getItem(key) === null) continue;
-    if (getDbSetting(key) !== null) {
-      localStorage.removeItem(key);
+  try {
+    const keysToMigrate = ['customAccountDict', 'fiscalMonth', 'accountDict'];
+    for (const key of keysToMigrate) {
+      if (localStorage.getItem(key) === null) continue;
+      if (getDbSetting(key) !== null) {
+        localStorage.removeItem(key);
+      }
     }
+  } catch (e) {
+    // Blocked site data must not make a finished save look failed
   }
 }
 
@@ -133,6 +137,7 @@ let draftGeneration = 0; // Draft generation (prevent stale overwrite)
 let draftSaveInFlight = null; // Promise for the current draft save
 let statusTimeoutId = null; // Status bar notification timer
 let isSaving = false; // Prevent concurrent saves flag
+let isSwitchingFile = false; // Set while old block elements are removed so their blur does not write to the new file
 let lastSavedPasswordHash = ''; // Track password changes via hash
 
 const isMac = /Mac|iPhone|iPad|iPod/i.test(navigator.userAgent);
@@ -213,7 +218,7 @@ async function markSecondaryTab() {
   );
   document.body.style.opacity = '0.5';
   document.body.style.pointerEvents = 'none';
-  // inert also blocks keyboard focus and shortcuts reaching the app
+  // inert blocks focus and clicks but not document keydown listeners; shortcuts are guarded in the keydown handler
   document.body.inert = true;
 }
 
@@ -697,6 +702,7 @@ function handlePlainTextPaste(event) {
 // --- セキュアなパスワード管理（メモリ上のみに保持） ---
 let currentMasterKey = null; // CryptoKey (extractable: false)
 let currentMasterKeyHash = ''; // string (SHA-256 hex)
+let pendingPasswordUpdate = Promise.resolve();
 
 async function setMasterPassword(password) {
   const pwInput = document.getElementById('file-password');
@@ -932,6 +938,7 @@ async function initSQLite() {
         if (isEncrypted) {
           let keyMaterial = currentMasterKey;
           let success = false;
+          let typedAttempts = 0;
           while (!success) {
             try {
               if (!keyMaterial) {
@@ -942,7 +949,9 @@ async function initSQLite() {
               lastSavedPasswordHash = currentMasterKeyHash;
             } catch (err) {
               const promptPw = await requestPasswordPrompt(
-                'バックアップデータは暗号化されています。解除パスワードを入力してください:',
+                typedAttempts > 0
+                  ? 'パスワードが違うか、バックアップデータが破損しています。もう一度入力してください:'
+                  : 'バックアップデータは暗号化されています。解除パスワードを入力してください:',
               );
               if (promptPw === null) {
                 await appAlert('起動をキャンセルしました。リロードしてやり直してください。');
@@ -951,6 +960,7 @@ async function initSQLite() {
                 return;
               }
               await setMasterPassword(promptPw);
+              typedAttempts++;
               keyMaterial = currentMasterKey;
             }
           }
@@ -3220,6 +3230,7 @@ function duplicateRecord(id) {
 // 4. 【核心部】 File System Access API を使った保存
 async function saveGrindFile(isSaveAs = false) {
   if (!db) return;
+  if (isSecondaryTab) return;
   if (isSaving) return;
   isSaving = true;
 
@@ -3257,6 +3268,9 @@ async function saveGrindFile(isSaveAs = false) {
   }
 
   try {
+    // Blurring the password field starts setMasterPassword; saving must not read the key before it finishes
+    await pendingPasswordUpdate;
+
     // ★ 抽出前にDBをデフラグし、ファイルサイズを最小化する
     db.run('VACUUM');
 
@@ -3473,6 +3487,7 @@ async function processFileHandle(handle, isDummy = false) {
     if (isEncrypted) {
       let keyMaterial = currentMasterKey;
       let success = false;
+      let typedAttempts = 0;
       while (!success) {
         try {
           if (!keyMaterial) {
@@ -3482,7 +3497,9 @@ async function processFileHandle(handle, isDummy = false) {
           success = true;
         } catch (err) {
           const promptPw = await requestPasswordPrompt(
-            'ファイルは暗号化されています。解除パスワードを入力してください:',
+            typedAttempts > 0
+              ? 'パスワードが違うか、ファイルが破損しています。もう一度入力するか、キャンセルして別のファイルをお試しください:'
+              : 'ファイルは暗号化されています。解除パスワードを入力してください:',
           );
           if (promptPw === null) {
             restorePasswordState(); // 誤入力したパスワードを、開いているファイルに残さない
@@ -3490,6 +3507,7 @@ async function processFileHandle(handle, isDummy = false) {
           }
           
           await setMasterPassword(promptPw);
+          typedAttempts++;
           keyMaterial = currentMasterKey;
         }
       }
@@ -3520,7 +3538,12 @@ async function processFileHandle(handle, isDummy = false) {
     migrateDatabase();
 
     // Block ids repeat across files: drop old block elements so their form input is not carried over
-    document.querySelectorAll('#blocks-container > [id^="block-"]').forEach((el) => el.remove());
+    isSwitchingFile = true;
+    try {
+      document.querySelectorAll('#blocks-container > [id^="block-"]').forEach((el) => el.remove());
+    } finally {
+      isSwitchingFile = false;
+    }
 
     loadSettingsFromDb(); // ファイル固有の設定をUIに反映
 
@@ -4955,6 +4978,10 @@ document.addEventListener('keydown', (e) => {
   const isAppShortcut =
     ((e.metaKey || e.ctrlKey) && ['KeyK', 'KeyS', 'KeyO'].includes(e.code)) ||
     (e.altKey && e.code === 'KeyN');
+  if (isSecondaryTab) {
+    if (isAppShortcut) e.preventDefault();
+    return;
+  }
   if (isAppShortcut && window.isSystemModalOpen && !isCommandPaletteOpen) {
     e.preventDefault();
     return;
@@ -5109,12 +5136,14 @@ document.addEventListener('DOMContentLoaded', () => {
   const pwInput = document.getElementById('file-password');
   if (pwInput) {
     pwInput.addEventListener('change', async (e) => {
-      await setMasterPassword(e.target.value);
+      pendingPasswordUpdate = setMasterPassword(e.target.value);
+      await pendingPasswordUpdate;
     });
     pwInput.addEventListener('keydown', async (e) => {
       if (e.key === 'Enter') {
         e.preventDefault();
-        await setMasterPassword(e.target.value);
+        pendingPasswordUpdate = setMasterPassword(e.target.value);
+        await pendingPasswordUpdate;
         pwInput.blur();
       }
     });
@@ -5958,6 +5987,7 @@ function initEventDelegation() {
   }, true);
 
   document.addEventListener('blur', (e) => {
+    if (isSwitchingFile) return;
     let target = e.target;
     if (target.hasAttribute('data-field')) {
       const id = Number(target.getAttribute('data-id'));
